@@ -3021,11 +3021,6 @@
     }
 
     // How a session reads to a person: a past date with nothing in Zoom is simply "No session"
-    function addDaysStr(d, n) {
-      const t = new Date(d + "T00:00:00Z");
-      t.setUTCDate(t.getUTCDate() + n);
-      return t.toISOString().slice(0, 10);
-    }
     function sessionState(s, today) {
       if (s.status === "Synced" || s.status === "Upcoming" || s.status === "Sync failed") return s.status;
       if (s.status === "Not in Zoom") return "No session";
@@ -3060,6 +3055,7 @@
       }
 
       const f = state.sessFilter;
+      const breakSundays = ((batchById(boot, state.batchId) || {}).breakWeeks) || [];
       const hosts = [...new Set(all.map(s => s.host))].sort();
       const inPhase = s => state.phase === "All" || s.phase === state.phase;
       const pass = s => inPhase(s)
@@ -3156,10 +3152,13 @@
                 <table class="sess-grid">
                   <thead><tr><th class="wk">Week</th>${types.map(t => `<th>${esc(t)}</th>`).join("")}</tr></thead>
                   <tbody>
-                    ${weeks.map(w => {
+                    ${weeks.map((w, wi) => {
                       const row = ps.filter(s => s.week === w);
                       const sun = row.find(s => s.type === "Sunday Learning") || row[0];
-                      return `<tr><td><div class="sess-wk">W${esc(sun.weekLabel)}<small>${esc(fmtDate(sun.date))}</small></div></td>${types.map(t => cell(row.find(s => s.type === t))).join("")}</tr>`;
+                      const nextSun = (ps.find(s => s.week === weeks[wi + 1] && s.type === "Sunday Learning") || {}).date;
+                      const breaksAfter = breakSundays.filter(b => b > sun.date && (!nextSun || b < nextSun));
+                      return `<tr><td><div class="sess-wk">W${esc(sun.weekLabel)}<small>${esc(fmtDate(sun.date))}</small></div></td>${types.map(t => cell(row.find(s => s.type === t))).join("")}</tr>`
+                        + breaksAfter.map(b => `<tr><td><div class="sess-wk" style="color:var(--text-muted);">Break<small>${esc(fmtDate(b))}</small></div></td><td colspan="${types.length}" class="sess-cell" style="height:auto;text-align:center;color:var(--text-muted);font-size:12.5px;">Break week · no classes counted (a session held this week counts as a make-up for the week before)</td></tr>`).join("");
                     }).join("")}
                   </tbody>
                 </table>
@@ -4414,6 +4413,12 @@
                   ${confirmButtons(`batch:${Number(b.id)}`, "Delete batch", `deleteBatch(${Number(b.id)})`, `del-batch:${Number(b.id)}`)}
                 </div>
                 ${state.confirm === `batch:${Number(b.id)}` ? `<div style="font-size:12px;color:var(--red);">Deleting removes this batch's meetings and all of its synced Zoom data.</div>` : ""}
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;">
+                  <label for="breaks-${Number(b.id)}" style="font-weight:600;">Break weeks</label>
+                  <input id="breaks-${Number(b.id)}" class="input-control" style="max-width:240px;height:32px;" placeholder="e.g. 2026-11-08" value="${esc((b.breakWeeks || []).join(", "))}" data-keep />
+                  <button class="btn btn-sm" onclick="saveBreakWeeks(${Number(b.id)})">Save</button>
+                  <span style="color:var(--text-muted);">Sundays with no classes (e.g. Diwali). The batch still gets 7 teaching weeks; sessions held that week count as make-ups for the week before.</span>
+                </div>
                 <div class="table-wrap">
                   <table class="data-table">
                     <thead>
@@ -5013,6 +5018,19 @@
         if (getRoute().screen === "settings") render(); else navigate("#/settings");
       },
       openListTab(id) { state.listsTab = id; state.listsSearch = ""; state.listsLimit = LIST_PAGE; navigate("#/lists"); },
+
+      // ----- Batch break weeks -----
+      async saveBreakWeeks(batchId) {
+        const el = document.getElementById("breaks-" + batchId);
+        const breakWeeks = String(el ? el.value : "").split(/[\s,;]+/).map(x => x.trim()).filter(Boolean);
+        try {
+          await apiFetch("PUT", `/api/batches/${Number(batchId)}`, { breakWeeks });
+          showToast(breakWeeks.length ? `Break weeks saved: ${breakWeeks.join(", ")}` : "Break weeks cleared");
+          invalidate(...ALL_DATA_KEYS);
+        } catch (e) {
+          showToast(e.message || "Couldn't save break weeks", "error");
+        }
+      },
 
       // ----- Call logging -----
       async openCallDialog(learnerId, batchId, phase) {

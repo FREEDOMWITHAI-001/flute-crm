@@ -214,7 +214,9 @@ const MIGRATIONS = [
      note TEXT
    );
    CREATE INDEX IF NOT EXISTS call_logs_learner ON call_logs(learner_id, called_at DESC);
-   ALTER TABLE call_logs ENABLE ROW LEVEL SECURITY`
+   ALTER TABLE call_logs ENABLE ROW LEVEL SECURITY`,
+  // Break Sundays (JSON array of YYYY-MM-DD) skipped when counting a batch's 7 teaching weeks
+  `ALTER TABLE batches ADD COLUMN IF NOT EXISTS break_weeks TEXT NOT NULL DEFAULT '[]'`
 ];
 
 async function migrate() {

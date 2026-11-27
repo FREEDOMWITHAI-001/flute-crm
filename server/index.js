@@ -233,7 +233,8 @@ export function createApp() {
     res.json({ sources: await store.syncSources(), alerts: await store.alerts(await store.defaultBatchId()), logs: await store.syncLogs() });
   }));
   app.get("/api/settings", ADMIN, h(async (req, res) => {
-    const batches = await q(`SELECT id, name, to_char(start_date, 'YYYY-MM-DD') AS "startDate" FROM batches ORDER BY start_date DESC`);
+    const batches = (await q(`SELECT id, name, to_char(start_date, 'YYYY-MM-DD') AS "startDate", break_weeks AS "breakWeeksJson" FROM batches ORDER BY start_date DESC`))
+      .map(({ breakWeeksJson, ...b }) => { let breakWeeks = []; try { breakWeeks = JSON.parse(breakWeeksJson || "[]"); } catch { /* ignore */ } return { ...b, breakWeeks }; });
     const meetings = await q(
       `SELECT id, batch_id AS "batchId", slot, zoom_account AS "zoomAccount", meeting_id AS "meetingId",
               registration_url AS "registrationUrl", topic, start_time AS "startTime", duration_min AS "durationMin",
@@ -284,9 +285,18 @@ export function createApp() {
     res.json({ id: b.id });
   }));
   app.put("/api/batches/:id", ADMIN, h(async (req, res) => {
-    const { name, startDate } = req.body || {};
+    const { name, startDate, breakWeeks } = req.body || {};
     if (startDate && (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || weekday(startDate) !== 0)) throw bad("Start date must be a Sunday");
-    await q(`UPDATE batches SET name = COALESCE($2, name), start_date = COALESCE($3::date, start_date) WHERE id = $1`, [Number(req.params.id), name ?? null, startDate || null]);
+    let breaksJson = null;
+    if (breakWeeks !== undefined) {
+      if (!Array.isArray(breakWeeks)) throw bad("breakWeeks must be a list of Sundays");
+      const clean = [...new Set(breakWeeks.map(String).map(s => s.trim()).filter(Boolean))].sort();
+      for (const d of clean) if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || weekday(d) !== 0) throw bad(`Break weeks are Sundays (YYYY-MM-DD); ${d} isn't`);
+      if (clean.length > 4) throw bad("At most 4 break weeks per batch");
+      breaksJson = JSON.stringify(clean);
+    }
+    await q(`UPDATE batches SET name = COALESCE($2, name), start_date = COALESCE($3::date, start_date), break_weeks = COALESCE($4, break_weeks) WHERE id = $1`,
+      [Number(req.params.id), name ?? null, startDate || null, breaksJson]);
     store.invalidate();
     res.json({ ok: true });
   }));

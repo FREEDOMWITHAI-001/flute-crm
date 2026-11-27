@@ -1,7 +1,7 @@
 // Loads rows from Postgres and builds (and caches) the analytics model per batch.
 // Any write (sync, review decision, settings, import) calls invalidate().
 import { q, q1 } from "./db.js";
-import { buildBatchModel, phase1Attendees, activeLearners, DEFAULT_RULES, WEEKS } from "./model.js";
+import { buildBatchModel, phase1Attendees, activeLearners, DEFAULT_RULES, WEEKS, batchCalendar } from "./model.js";
 import { suggestLearners, regionFor } from "./match.js";
 import { todayIst, addDays, fmtShortDate } from "./time.js";
 import { loadZoomAccounts } from "./zoom.js";
@@ -44,9 +44,13 @@ async function loadCommon() {
     q(`SELECT identity_key, decision, learner_id, decided_at FROM identity_links`),
     q(`SELECT key FROM dnc`),
     getRules(),
-    q(`SELECT id, name, to_char(start_date, 'YYYY-MM-DD') AS "startDate" FROM batches ORDER BY start_date`)
+    q(`SELECT id, name, to_char(start_date, 'YYYY-MM-DD') AS "startDate", break_weeks AS "breakWeeksJson" FROM batches ORDER BY start_date`)
   ]);
   const links = new Map(linkRows.map(r => [r.identity_key, { decision: r.decision, learnerId: r.learner_id, decidedAt: r.decided_at }]));
+  for (const b of batches) {
+    try { b.breakWeeks = JSON.parse(b.breakWeeksJson || "[]"); } catch { b.breakWeeks = []; }
+    delete b.breakWeeksJson;
+  }
   let syncErrors = new Map();
   try {
     const sync = await import("./sync.js");
@@ -111,7 +115,7 @@ export async function defaultBatchId() {
   const c = await loadCommon();
   if (!c.batches.length) return null;
   const today = c.today;
-  const active = [...c.batches].reverse().find(b => b.startDate <= today && today <= addDays(b.startDate, WEEKS * 7 - 1));
+  const active = [...c.batches].reverse().find(b => b.startDate <= today && today <= batchCalendar(b).lastDay);
   if (active) return active.id;
   const started = [...c.batches].reverse().find(b => b.startDate <= today);
   return (started || c.batches[0]).id;

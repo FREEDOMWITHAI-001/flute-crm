@@ -2,9 +2,9 @@
 import { db, q, q1, insertMany } from "./db.js";
 import { ZoomClient, loadZoomAccounts } from "./zoom.js";
 import { istDate, istTime, addDays, todayIst } from "./time.js";
+import { batchCalendar } from "./model.js";
 
 const DAY_MS = 86_400_000;
-const BATCH_LAST_DAY = 48; // 7 weeks: day 0 .. day 48
 const LOOKBACK_DAYS = 70; // 14 weeks: a batch's meetings are still synced through Phase 2
 const RECENT_REPORT_DAYS = 3; // Zoom keeps adding late leave rows for a while after a session
 
@@ -46,7 +46,7 @@ async function syncAccount(account, client, now, log) {
   try {
     const today = todayIst(now);
     const meetings = await q(
-      `SELECT bm.*, b.start_date
+      `SELECT bm.*, b.start_date, b.break_weeks
          FROM batch_meetings bm JOIN batches b ON b.id = bm.batch_id
         WHERE bm.zoom_account = $1
           AND ((b.start_date <= $2::date AND b.start_date >= $3::date)
@@ -116,7 +116,9 @@ async function syncAccount(account, client, now, log) {
         fail(`Meeting ${m.meeting_id} instances`, e);
         continue;
       }
-      const windowEnd = addDays(m.start_date, BATCH_LAST_DAY);
+      let breaks = [];
+      try { breaks = JSON.parse(m.break_weeks || "[]"); } catch { /* malformed → no breaks */ }
+      const windowEnd = batchCalendar({ startDate: m.start_date, breakWeeks: breaks }).lastDay;
       for (const inst of instances) {
         if (!inst.uuid || !inst.start_time) continue;
         const date = istDate(inst.start_time);

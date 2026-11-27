@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildBatchModel, unionIntervals, sessionType, phase1Attendees, activeLearners } from "../server/model.js";
+import { buildBatchModel, unionIntervals, sessionType, phase1Attendees, activeLearners, batchCalendar, teachingWeekOf } from "../server/model.js";
 import { resolveIdentity, buildLearnerIndex, suggestLearners, normPhone, regionFor } from "../server/match.js";
 
 // 6 Dec 2026 is a Sunday. Learning P1 at 19:00 IST = 13:30Z; practice at 19:30 IST = 14:00Z.
@@ -262,4 +262,32 @@ test("20-minute rule is exact: 19m 40s is not attended, 20m 00s is", () => {
   assert.equal(d.find(p => p.zoomEmail === "asha@example.com").totalMinutes, 19);
   assert.equal(d.find(p => p.zoomEmail === "dev@example.com").totalMinutes, 20);
   assert.equal(s.attended, 1);
+});
+
+test("break weeks: 7 teaching Sundays skip the break, window stretches, make-up counts to the week before", () => {
+  const cal = batchCalendar({ startDate: "2026-12-06", breakWeeks: ["2026-12-20"] });
+  assert.deepEqual(cal.sundays, ["2026-12-06", "2026-12-13", "2026-12-27", "2027-01-03", "2027-01-10", "2027-01-17", "2027-01-24"]);
+  assert.equal(cal.lastDay, "2027-01-30");
+  assert.equal(teachingWeekOf(cal, "2026-12-22"), 2);   // Tue in the break week → make-up for week 2
+  assert.equal(teachingWeekOf(cal, "2026-12-27"), 3);
+  assert.equal(teachingWeekOf(cal, "2027-01-28"), 7);   // still inside the stretched window
+  assert.equal(teachingWeekOf(cal, "2027-01-31"), null);
+
+  const b = { ...batch, breakWeeks: ["2026-12-20"] };
+  const inst = [
+    ...instances,
+    { uuid: "w3late", batchMeetingId: 10, startTime: at("2026-12-27", "13:30"), endTime: at("2026-12-27", "15:00") },
+    { uuid: "makeup", batchMeetingId: 11, startTime: at("2026-12-22", "14:00"), endTime: at("2026-12-22", "15:00") }
+  ];
+  const m = build({ batch: b, instances: inst, today: "2026-12-28" });
+  const s20 = m.sessions.find(s => s.date === "2026-12-20" && s.slot === "learning_p1");
+  assert.equal(s20.week, 2); // the fixture's 20 Dec Sunday falls in the break → counted as a week-2 make-up
+  const sun27 = m.sessions.find(s => s.date === "2026-12-27" && s.slot === "learning_p1");
+  assert.equal(sun27.week, 3);
+  const tue22 = m.sessions.find(s => s.date === "2026-12-22" && s.slot === "practice_p1");
+  assert.equal(tue22.week, 2);
+  // no phantom "missing" week-3 Sunday on the break date; 7 teaching weeks still exist
+  assert.equal(new Set(m.sessions.filter(s => s.slot === "learning_p1").map(s => s.week)).size, 7);
+  assert.equal(m.batch.endDate, "2027-01-30");
+  assert.deepEqual(m.batch.breakWeeks, ["2026-12-20"]);
 });

@@ -44,9 +44,31 @@ export function weekOf(batchStart, dateStr) {
   return Math.floor(daysBetween(batchStart, dateStr) / 7) + 1;
 }
 
+/**
+ * A batch's teaching calendar: 7 teaching Sundays from the start, skipping break Sundays (e.g. Diwali).
+ * lastDay is the Saturday after the 7th teaching Sunday, so the window stretches by one week per break.
+ */
+export function batchCalendar(batch) {
+  const breaks = new Set((batch.breakWeeks || []).filter(d => d > batch.startDate));
+  const sundays = [];
+  for (let d = batch.startDate, i = 0; sundays.length < WEEKS && i < 60; d = addDays(d, 7), i++) {
+    if (!breaks.has(d)) sundays.push(d);
+  }
+  const lastDay = addDays(sundays[sundays.length - 1], 6);
+  return { sundays, breaks: [...breaks].filter(b => b < lastDay).sort(), lastDay };
+}
+
+/** Teaching week (1–7) of a date, or null outside the batch. A session held in a break week is a make-up for the week before. */
+export function teachingWeekOf(cal, dateStr) {
+  if (dateStr < cal.sundays[0] || dateStr > cal.lastDay) return null;
+  let w = null;
+  for (let i = 0; i < cal.sundays.length; i++) if (cal.sundays[i] <= dateStr) w = i + 1;
+  return w;
+}
+
 export function batchStatus(batch, today) {
   if (today < batch.startDate) return "Upcoming";
-  if (today > addDays(batch.startDate, WEEKS * 7 - 1)) return "Completed";
+  if (today > batchCalendar(batch).lastDay) return "Completed";
   return "Active";
 }
 
@@ -123,13 +145,14 @@ export function buildBatchModel(input) {
   // ---------- Sessions: one per (slot, IST date); several Zoom instances on a day merge ----------
   const sessions = new Map();
   const sessionIdFor = (slot, date) => `${batch.id}-${slot}-${date}`;
+  const cal = batchCalendar(batch);
   const instanceSession = new Map();
   for (const inst of instances) {
     const m = meetingById.get(inst.batchMeetingId);
     if (!m) continue;
     const date = istDate(inst.startTime);
-    const week = weekOf(batch.startDate, date);
-    if (week < 1 || week > WEEKS) continue; // belongs to another cycle
+    const week = teachingWeekOf(cal, date);
+    if (week == null) continue; // belongs to another cycle
     const id = sessionIdFor(m.slot, date);
     let s = sessions.get(id);
     if (!s) {
@@ -157,14 +180,16 @@ export function buildBatchModel(input) {
     instanceSession.set(inst.uuid, s);
   }
 
-  // Expected-but-missing sessions (future ones and ones Zoom hasn't returned yet)
+  // Expected-but-missing sessions (future ones and ones Zoom hasn't returned yet).
+  // Skip a slot/week/type that already ran on another date (e.g. a make-up held in a break week).
+  const heldKey = new Set([...sessions.values()].map(s => `${s.slot}|${s.week}|${s.type}`));
   for (const m of meetings) {
     for (let w = 1; w <= WEEKS; w++) {
       const offsets = SLOTS[m.slot].kind === "learning" ? [0] : [2, 4];
       for (const off of offsets) {
-        const date = addDays(batch.startDate, (w - 1) * 7 + off);
+        const date = addDays(cal.sundays[w - 1], off);
         const id = sessionIdFor(m.slot, date);
-        if (sessions.has(id)) continue;
+        if (sessions.has(id) || heldKey.has(`${m.slot}|${w}|${sessionType(m.slot, date)}`)) continue;
         sessions.set(id, {
           id, batchId: batch.id, slot: m.slot, phase: SLOTS[m.slot].phase, week: w, date,
           day: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][weekday(date)],
@@ -575,9 +600,10 @@ export function buildBatchModel(input) {
   return {
     batch: {
       id: batch.id, name: batch.name || `Batch starting ${fmtShortDate(batch.startDate)}`, shortName: fmtShortDate(batch.startDate),
-      startDate: batch.startDate, status, totalWeeks: WEEKS,
+      startDate: batch.startDate, status, totalWeeks: WEEKS, breakWeeks: cal.breaks, endDate: cal.lastDay,
       currentWeek: Math.max(phaseSummary.All.p1.currentWeek, phaseSummary.All.p2.currentWeek),
-      calendarWeek: status === "Active" ? weekOf(batch.startDate, today) : (status === "Completed" ? WEEKS : 0),
+      calendarWeek: status === "Active" ? (teachingWeekOf(cal, today) || 0) : (status === "Completed" ? WEEKS : 0),
+      inBreakWeek: status === "Active" && cal.breaks.some(b => today >= b && today <= addDays(b, 6)),
       hasData: sessionList.some(s => s.status === "Synced"),
       meetingsConfigured: meetings.length,
       phaseSummary
