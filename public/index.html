@@ -3097,7 +3097,7 @@
           const pct = s.registered ? Math.round((s.attended / s.registered) * 100) : null;
           return `
             <td class="sess-cell open ${dim}" role="link" tabindex="0" data-hash="${esc(openHash(s))}" onclick="navigate(this.dataset.hash)" onkeydown="if(event.key==='Enter')navigate(this.dataset.hash)" title="${esc(s.type)} · ${esc(when)} · ${esc(s.host)}">
-              <div class="sess-num">${fmtNum(s.attended)}${pct != null ? `<span>${pct}%</span>` : ""}</div>
+              <div class="sess-num">${fmtNum(s.attended)}${pct != null ? ` <span>${pct}%</span>` : ""}</div>
               <div class="sess-sub">${esc(when)} · ${fmtNum(s.joined)} joined</div>
               <div class="sess-bar"><i style="width:${Math.min(100, pct ?? 0)}%"></i></div>
             </td>`;
