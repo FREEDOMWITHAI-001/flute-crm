@@ -2675,7 +2675,7 @@
             <div class="kpi-label"><span>Paid learners in this batch</span></div>
             <div class="kpi-value-row">
               <span class="kpi-primary tabular">${fmtNum(den)}</span>
-              <span class="kpi-counts">${fmtNum(agg.registered)} registered on Zoom</span>
+              <span class="kpi-counts">${agg.registered ? `${fmtNum(agg.registered)} registered on the current Zoom links` : "no Zoom registration for these links"}</span>
             </div>
             <div class="kpi-foot">${fmtNum(agg.refunded)} refunded (excluded) · every % below is of these paid learners</div>
           </div>
@@ -2750,7 +2750,7 @@
               <div class="card-header">
                 <div>
                   <h2 class="card-title">${esc(p.label)}</h2>
-                  <p class="card-subtitle">${p.configured ? `${fmtNum(p.paid)} paid learners · ${fmtNum(p.registered)} registered on Zoom` : "No Zoom meetings linked for this phase"}</p>
+                  <p class="card-subtitle">${p.configured ? `${fmtNum(p.paid)} paid learners${p.registered ? ` · ${fmtNum(p.registered)} registered on the current Zoom link` : ""}` : "No Zoom meetings linked for this phase"}</p>
                 </div>
                 <span class="badge ${badgeCls}">${badgeText}</span>
               </div>
@@ -3031,7 +3031,7 @@
        ========================================================================= */
     function sessionStatusNote(s) {
       if (s.status === "Upcoming") {
-        return `<div style="font-size:12px;color:var(--text-muted);padding-top:6px;border-top:1px solid var(--border-subtle);">Upcoming · ${fmtNum(s.registered)} registered</div>`;
+        return `<div style="font-size:12px;color:var(--text-muted);padding-top:6px;border-top:1px solid var(--border-subtle);">Upcoming · ${s.registered != null ? `${fmtNum(s.registered)} registered` : "no registrations yet"}</div>`;
       }
       if (s.status === "Sync failed") {
         return `<div style="font-size:12px;color:var(--red);padding-top:6px;border-top:1px solid var(--border-subtle);">Sync failed${s.syncError ? `: ${esc(s.syncError)}` : ""} · <a href="#/sync">Retry sync</a></div>`;
@@ -3210,7 +3210,7 @@
           if (s.view !== "Synced") {
             const warn = s.view === "Awaiting data" || s.view === "Sync failed";
             const note = s.view === "No session" ? "Nothing in Zoom on this date"
-              : s.view === "Upcoming" ? `${fmtNum(s.registered)} registered`
+              : s.view === "Upcoming" ? (s.registered != null ? `${fmtNum(s.registered)} registered` : "no registrations yet")
               : s.view === "Sync failed" ? "Retry from Sync & Alerts" : "Report not pulled yet";
             return `
               <td class="sess-cell ${dim}" title="${esc(s.type)} · ${esc(when)}">
@@ -3293,7 +3293,7 @@
                       <td>${esc(s.phase)}</td>
                       <td style="font-size:12px;color:var(--text-muted);">${esc(s.host)}<div class="sub-cell">ID ${esc(s.meetingId || "—")}</div></td>
                       <td><span class="sess-chip" style="padding:2px 8px;"><span class="sess-dot" style="background:${SESS_STATE_DOT[s.view]}"></span>${esc(s.view)}</span></td>
-                      <td class="num">${fmtNum(s.registered)}</td>
+                      <td class="num" title="Registrations for this session's Zoom link">${s.registered != null ? fmtNum(s.registered) : '<span style="color:var(--text-muted);" title="This Zoom link had no registration">—</span>'}</td>
                       <td class="num">${canOpen ? fmtNum(s.joined) : "—"}</td>
                       <td class="num">${canOpen && s.attended != null ? `<strong>${fmtNum(s.paidAttended ?? s.attended)}</strong> (${fmtPct(s.paidAttended ?? s.attended, s.cohort || s.registered)})${s.unmatchedAttended ? `<div class="sub-cell">+${fmtNum(s.unmatchedAttended)} unmatched</div>` : ""}` : "—"}</td>
                       <td class="num">${canOpen && s.avgMinutes != null ? s.avgMinutes + "m" : "—"}</td>
@@ -3367,7 +3367,7 @@
           </div>
           <div class="kpi-card">
             <div class="kpi-label">Joined Zoom</div>
-            <div class="kpi-value-row"><span class="kpi-primary tabular">${fmtNum(s.joined)}</span><span class="kpi-counts">people · ${fmtNum(s.registered)} registered on Zoom</span></div>
+            <div class="kpi-value-row"><span class="kpi-primary tabular">${fmtNum(s.joined)}</span><span class="kpi-counts">people · ${s.registered != null ? `${fmtNum(s.registered)} registered for this Zoom link` : "no Zoom registration for this session"}</span></div>
           </div>
           <div class="kpi-card">
             <div class="kpi-label">Avg Minutes · Peak</div>

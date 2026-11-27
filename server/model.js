@@ -122,6 +122,9 @@ export function buildBatchModel(input) {
 
   // ---------- Registrants per slot (resolved to people) ----------
   const registrantById = new Map();
+  // Registrations belong to ONE Zoom link. A session shows only the registrations of the link it ran on;
+  // sessions on links without registration (the old webinars before 15 Nov) show none.
+  const registeredByMeeting = new Map(); // zoom meeting id -> Map(personKey -> region)
   const registeredBySlot = new Map(); // slot -> Map(personKey -> region)
   for (const m of meetings) if (!registeredBySlot.has(m.slot)) registeredBySlot.set(m.slot, new Map());
   const meetingSlotsByZoomId = new Map();
@@ -137,7 +140,10 @@ export function buildBatchModel(input) {
     if (id.excluded) continue;
     const learner = id.learnerId ? index.byId.get(id.learnerId) : null;
     const region = regionFor({ phone: learner?.phone || r.phone, country: learner?.country });
-    for (const slot of meetingSlotsByZoomId.get(String(r.meetingId).replace(/\s/g, "")) || []) {
+    const mk = String(r.meetingId).replace(/\s/g, "");
+    if (!registeredByMeeting.has(mk)) registeredByMeeting.set(mk, new Map());
+    registeredByMeeting.get(mk).set(id.personKey, region);
+    for (const slot of meetingSlotsByZoomId.get(mk) || []) {
       registeredBySlot.get(slot)?.set(id.personKey, region);
     }
   }
@@ -273,7 +279,7 @@ export function buildBatchModel(input) {
       ? Math.max(1, Math.round(minutesBetween(s.startIso, s.endIso)))
       : (s.scheduledDuration || (SLOTS[s.slot].kind === "learning" ? 90 : 60));
     const startTime = s.hasData ? istTime(s.startIso) : (s.scheduledTime || null);
-    const registeredMap = registeredBySlot.get(s.slot) || new Map();
+    const registeredMap = registeredByMeeting.get(String(s.meetingId || "").replace(/\s/g, "")) || null;
     const perSession = attendance.get(s.id) || new Map();
     // "Late" counts from the scheduled class time, not from when the host opened the room
     // (rooms open 10-15 min early, and a host test-start can be half an hour early)
@@ -334,7 +340,7 @@ export function buildBatchModel(input) {
       date: s.date, day: s.day, phase: s.phase, type: s.type, startTime, durationMin, scheduledTime: s.scheduledTime || null,
       zoomAccount: s.zoomAccount, meetingId: s.meetingId, hostEmail: s.hostEmail || null, status,
       syncError: status === "Sync failed" ? input.syncErrors.get(s.zoomAccount) : null,
-      registered: registeredMap.size,
+      registered: registeredMap ? registeredMap.size : null, // null = this session's Zoom link has no registrations
       joined: s.hasData ? participants.length : null,
       attended: s.hasData ? attended.length : null,
       paidAttended: s.hasData ? paidAttended : null,

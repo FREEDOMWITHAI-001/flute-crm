@@ -111,3 +111,24 @@ test("percentages: no session or weekly figure is ever above 100%", () => {
   for (const v of m.batch.phaseSummary.All.p1.sessionTypeRates.sunday) assert.ok(v == null || v <= 100);
   for (const [i, v] of m.batch.phaseSummary.All.p1.weeklyRetainedFromW1.entries()) if (v != null) assert.ok(v <= m.batch.phaseSummary.All.p1.w1Attended, `week ${i + 1}`);
 });
+
+test("registered: a session only shows registrations of its own Zoom link; no registration data → null, never borrowed", () => {
+  const meetings2 = [
+    { id: 1, slot: "learning_p1", zoomAccount: "zoom1", meetingId: "OLDWEBINAR", startTime: "19:00", durationMin: 90 },
+    { id: 2, slot: "learning_p1", zoomAccount: "zoom1", meetingId: "NEWLINK", startTime: "19:00", durationMin: 90 }
+  ];
+  const instances2 = [
+    { uuid: "old", batchMeetingId: 1, startTime: `${sun(1)}T13:30:00Z`, endTime: `${sun(1)}T15:00:00Z` },
+    { uuid: "new", batchMeetingId: 2, startTime: `${sun(2)}T13:30:00Z`, endTime: `${sun(2)}T15:00:00Z` }
+  ];
+  const rows2 = [1, 2].map(w => ({ instanceUuid: w === 1 ? "old" : "new", name: "L1 Person", email: "l1@t.in", joinTime: `${sun(w)}T13:30:00Z`, leaveTime: `${sun(w)}T15:00:00Z` }));
+  const registrants2 = [
+    { meetingId: "NEWLINK", registrantId: "a", email: "l1@t.in", firstName: "L1", lastName: "Person", phone: "" },
+    { meetingId: "NEWLINK", registrantId: "b", email: "l2@t.in", firstName: "L2", lastName: "Person", phone: "" }
+  ];
+  const m = buildBatchModel({ batch, meetings: meetings2, instances: instances2, rows: rows2, registrants: registrants2,
+    learners: callLearners, links: new Map(), dnc: new Set(), rules: {}, today: "2027-01-08" });
+  const s1 = m.sessions.find(s => s.date === sun(1)), s2 = m.sessions.find(s => s.date === sun(2));
+  assert.equal(s1.registered, null);   // old webinar: nobody registered → not "2"
+  assert.equal(s2.registered, 2);
+});
