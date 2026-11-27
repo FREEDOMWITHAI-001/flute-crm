@@ -699,6 +699,13 @@ export function buildJourney(cur, next, rules = DEFAULT_RULES) {
   });
 
   const starters = learners.filter(l => l.startedW1);
+  // Sunday of each of the 14 weeks: 1–7 from this batch (breaks skipped), 8–14 from the next batch
+  // (or the 7 Sundays after this batch if the next one isn't set up yet)
+  const curCal = batchCalendar({ startDate: cur.batch.startDate, breakWeeks: cur.batch.breakWeeks || [] });
+  const nextSundays = next
+    ? batchCalendar({ startDate: next.batch.startDate, breakWeeks: next.batch.breakWeeks || [] }).sundays
+    : Array.from({ length: WEEKS }, (_, i) => addDays(curCal.lastDay, 1 + i * 7));
+  const weekDates = [...curCal.sundays, ...nextSundays];
   const weekly = Array.from({ length: 2 * WEEKS }, (_, i) => {
     const held = learners.some(l => l.weeks[i].status !== "upcoming");
     return held ? learners.filter(l => l.weeks[i].status === "attended").length : null;
@@ -720,6 +727,8 @@ export function buildJourney(cur, next, rules = DEFAULT_RULES) {
       completedLateStart: learners.filter(l => l.reachedW14 && !l.startedW1).length
     },
     weeklyAttended: weekly,
+    weekDates,
+    weekDatesPlanned: !next, // weeks 8–14 dates are an estimate until the next batch is set up
     stages: learners.reduce((o, l) => ((o[l.stage] = (o[l.stage] || 0) + 1), o), {}),
     learners: learners.sort((a, b) => b.weeksAttended - a.weeksAttended || String(a.name).localeCompare(String(b.name)))
   };

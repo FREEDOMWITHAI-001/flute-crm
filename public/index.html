@@ -1202,6 +1202,8 @@
     .jr-bar.none { background: var(--border-subtle); }
     .jr-bar span { position: absolute; top: -17px; left: 50%; transform: translateX(-50%); font-size: 10.5px; color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .jr-axis { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 6px; font-size: 11px; color: var(--text-muted); text-align: center; margin-top: 4px; }
+    .jr-axis span { display: flex; flex-direction: column; line-height: 1.25; font-weight: 600; }
+    .jr-axis small { font-size: 10.5px; font-weight: 400; white-space: nowrap; }
     .jr-strip { display: inline-grid; grid-template-columns: repeat(7, 10px) 4px repeat(7, 10px); gap: 3px; align-items: center; white-space: nowrap; }
     .jr-strip i { width: 10px; height: 10px; border-radius: 3px; background: var(--border-subtle); }
     .jr-strip i.attended { background: var(--green); }
@@ -3045,6 +3047,11 @@
       return "";
     }
 
+    // "11 Oct" — short day + month for tight axes
+    function shortDay(d) {
+      if (!d) return "";
+      return new Date(d + "T00:00:00Z").toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+    }
     const JOURNEY_STAGE_BADGE = {
       "Completed": "badge-green", "In Phase 2": "badge-blue", "In Phase 1": "badge-teal", "Finished Phase 1": "badge-slate",
       "Stopped in Phase 2": "badge-amber", "Did not continue": "badge-red", "Restarted next batch": "badge-slate"
@@ -3066,7 +3073,7 @@
       const rows = j.learners.filter(l => (state.journeyStage === "All" || l.stage === state.journeyStage)
         && (!q || String(l.name).toLowerCase().includes(q) || String(l.email).toLowerCase().includes(q) || String(l.phone).includes(q)));
       const pg = pageOf(rows, state.journeyLimit, 50);
-      const strip = l => `<span class="jr-strip" aria-label="${fmtNum(l.weeksAttended)} of 14 weeks attended">${l.weeks.map((w, i) => `${i === 7 ? '<i class="gap"></i>' : ""}<i class="${w.status}" title="Week ${w.label}: ${w.status}"></i>`).join("")}</span>`;
+      const strip = l => `<span class="jr-strip" aria-label="${fmtNum(l.weeksAttended)} of 14 weeks attended">${l.weeks.map((w, i) => `${i === 7 ? '<i class="gap"></i>' : ""}<i class="${w.status}" title="Week ${w.label}${(j.weekDates || [])[i] ? " · " + fmtDate(j.weekDates[i]) : ""}: ${w.status}"></i>`).join("")}</span>`;
       const stages = ["All", ...Object.keys(JOURNEY_STAGE_BADGE).filter(st => j.stages[st])];
 
       el.innerHTML = `
@@ -3087,7 +3094,8 @@
         <section class="card">
           <div class="card-header"><div><h2 class="card-title">People attending each week (W1 → W14)</h2><p class="card-subtitle">Teal = Phase 1 · Blue = Phase 2 · grey = not held yet</p></div></div>
           <div class="jr-bars">${j.weeklyAttended.map((v, i) => `<div class="jr-bar ${v == null ? "none" : i >= 7 ? "p2" : ""}" style="height:${v == null ? 2 : Math.max(2, Math.round((v / max) * 130))}px"><span>${v == null ? "" : fmtNum(v)}</span></div>`).join("")}</div>
-          <div class="jr-axis">${j.weeklyAttended.map((_, i) => `<span>W${i + 1}</span>`).join("")}</div>
+          <div class="jr-axis">${j.weeklyAttended.map((_, i) => `<span>W${i + 1}<small>${esc(shortDay((j.weekDates || [])[i]))}</small></span>`).join("")}</div>
+          ${j.weekDatesPlanned ? '<p class="card-subtitle" style="margin-top:6px;">Weeks 8–14 dates are estimated until the next batch is set up.</p>' : ""}
         </section>
         <section class="card" style="display:flex;flex-direction:column;gap:12px;">
           <div class="toolbar" style="margin:0;">

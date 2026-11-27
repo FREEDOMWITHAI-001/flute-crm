@@ -188,3 +188,16 @@ test("calendar: a break listed before the start date, or on the start date, is i
   assert.deepEqual(cal.breaks, []);
   assert.equal(cal.sundays[0], "2026-12-06");
 });
+
+test("journey: each of the 14 weeks has its Sunday date (8–14 from the next batch)", () => {
+  const j = journey();
+  assert.equal(j.weekDates.length, 14);
+  assert.equal(j.weekDates[0], "2026-12-06");
+  assert.equal(j.weekDates[6], "2027-01-17");
+  assert.equal(j.weekDates[7], "2027-01-24"); // = next batch start
+  assert.equal(j.weekDates[13], "2027-03-07");
+  assert.equal(j.weekDatesPlanned, false);
+  const solo = journey("2026-12-30", {}, { noNext: true });
+  assert.equal(solo.weekDates[7], "2027-01-24"); // estimated: the Sunday after week 7
+  assert.equal(solo.weekDatesPlanned, true);
+});
