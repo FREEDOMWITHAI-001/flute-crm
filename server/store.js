@@ -1,7 +1,7 @@
 // Loads rows from Postgres and builds (and caches) the analytics model per batch.
 // Any write (sync, review decision, settings, import) calls invalidate().
 import { q, q1 } from "./db.js";
-import { buildBatchModel, phase1Attendees, activeLearners, DEFAULT_RULES, WEEKS, batchCalendar } from "./model.js";
+import { buildBatchModel, phase1Attendees, activeLearners, DEFAULT_RULES, WEEKS, batchCalendar, buildJourney } from "./model.js";
 import { suggestLearners, regionFor } from "./match.js";
 import { todayIst, addDays, fmtShortDate } from "./time.js";
 import { loadZoomAccounts } from "./zoom.js";
@@ -145,6 +145,17 @@ export async function overview(batchId) {
     if (p1 || p2) prevBatch = { shortName: pm.batch.shortName, curve: { p1, p2 } };
   }
   return { batch: m.batch, prevBatch, alerts: await alerts(batchId) };
+}
+
+/** 14-week journey of the group that started in this batch (weeks 8–14 from the next batch's Phase 2). */
+export async function journey(batchId) {
+  const c = await loadCommon();
+  const batch = c.batches.find(b => b.id === Number(batchId));
+  if (!batch) return null;
+  const next = c.batches.find(b => b.startDate > batch.startDate);
+  const cur = await modelFor(batch.id);
+  const nm = next ? await modelFor(next.id) : null;
+  return buildJourney(cur, nm, c.rules);
 }
 
 export async function sessionDetail(sessionId) {

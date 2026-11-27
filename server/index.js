@@ -182,6 +182,11 @@ export function createApp() {
     if (!p) return res.status(404).json({ error: "Learner not found" });
     res.json(p);
   }));
+  app.get("/api/batches/:id/journey", requireRole("Admin", "Viewer"), h(async (req, res) => {
+    const out = await store.journey(Number(req.params.id));
+    if (!out) return res.status(404).json({ error: "Batch not found" });
+    res.json(out);
+  }));
   app.get("/api/batches/:id/lists", requireRole("Admin", "Team member"), h(async (req, res) => {
     const out = await store.lists(Number(req.params.id));
     if (!out) return res.status(404).json({ error: "Batch not found" });

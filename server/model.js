@@ -645,3 +645,76 @@ export function activeLearners(models, { today, rules }) {
 }
 
 export { normName };
+
+
+/**
+ * The 14-week journey of the group that STARTED in `cur` (its Phase 1 members):
+ * weeks 1–7 come from `cur` Phase 1, weeks 8–14 from `next` Phase 2 (the same people, one batch later).
+ * Someone who restarts in the next batch's Phase 1 (a late joiner) is "Restarted", not a Phase 2 continuer.
+ */
+export function buildJourney(cur, next, rules = DEFAULT_RULES) {
+  const r = { ...DEFAULT_RULES, ...rules };
+  const attended = wk => !!wk && wk.status !== "upcoming" && (
+    (r.attendedSessionTypes.includes("Sunday Learning") && wk.sun >= r.attendedMinMinutes) ||
+    (r.attendedSessionTypes.includes("Tuesday Practice") && wk.tue >= r.attendedMinMinutes) ||
+    (r.attendedSessionTypes.includes("Thursday Q&A") && wk.thu >= r.attendedMinMinutes));
+  const p2 = new Map((next ? next.learners.filter(x => x.phase === "Phase 2") : []).map(x => [x.id, x]));
+  const restarted = new Set((next ? next.learners.filter(x => x.phase === "Phase 1") : []).map(x => x.id));
+  const nextStatus = next ? next.batch.status : "Not set up";
+  const blankPhase2 = Array.from({ length: WEEKS }, (_, i) => ({ week: i + 1, sun: null, tue: null, thu: null, status: "upcoming" }));
+  const phase2Done = nextStatus === "Completed";
+  const phase1Done = cur.batch.status === "Completed";
+
+  const learners = cur.learners.filter(x => x.phase === "Phase 1" && x.status !== "refunded").map(x => {
+    const q = p2.get(x.id);
+    const weeks = [
+      ...x.weeks.map(w => ({ ...w, label: w.week })),
+      ...(q ? q.weeks : blankPhase2).map(w => ({ ...w, label: w.week + WEEKS }))
+    ];
+    const att = weeks.map(attended);
+    const any = (a, b) => att.slice(a, b).some(Boolean);
+    const startedW1 = att[0];
+    let stage;
+    if (att[2 * WEEKS - 1]) stage = "Completed";
+    else if (restarted.has(x.id) && !any(WEEKS, 2 * WEEKS)) stage = "Restarted next batch";
+    else if (any(WEEKS, 2 * WEEKS)) stage = phase2Done ? "Stopped in Phase 2" : "In Phase 2";
+    else if (!phase1Done) stage = "In Phase 1";
+    else if (next && (nextStatus === "Active" || phase2Done)) stage = "Did not continue";
+    else stage = "Finished Phase 1";
+    return {
+      id: x.id, name: x.name, email: x.email, phone: x.phone, region: x.region, doNotContact: x.doNotContact,
+      startedW1, lateStart: !startedW1 && att.some(Boolean),
+      weeks: weeks.map((w, i) => ({ label: w.label, status: w.status === "upcoming" ? "upcoming" : att[i] ? "attended" : (w.sun || w.tue || w.thu) ? "partial" : "missed" })),
+      weeksAttended: att.filter(Boolean).length,
+      weeksHeld: weeks.filter(w => w.status !== "upcoming").length,
+      reachedW7: att[WEEKS - 1], joinedPhase2: any(WEEKS, 2 * WEEKS), reachedW14: att[2 * WEEKS - 1],
+      stage
+    };
+  });
+
+  const starters = learners.filter(l => l.startedW1);
+  const weekly = Array.from({ length: 2 * WEEKS }, (_, i) => {
+    const held = learners.some(l => l.weeks[i].status !== "upcoming");
+    return held ? learners.filter(l => l.weeks[i].status === "attended").length : null;
+  });
+  return {
+    cohort: {
+      batchId: cur.batch.id, name: cur.batch.name, startDate: cur.batch.startDate, phase1End: cur.batch.endDate, phase1Status: cur.batch.status,
+      nextBatchId: next ? next.batch.id : null, nextName: next ? next.batch.name : null,
+      phase2Start: next ? next.batch.startDate : null, phase2End: next ? next.batch.endDate : null, phase2Status: nextStatus
+    },
+    // Funnel follows the true cohort: people who attended week 1
+    funnel: {
+      learners: learners.length,
+      startedW1: starters.length,
+      reachedW7: starters.filter(l => l.reachedW7).length,
+      joinedPhase2: starters.filter(l => l.joinedPhase2).length,
+      reachedW14: starters.filter(l => l.reachedW14).length,
+      completedAll: learners.filter(l => l.reachedW14).length, // incl. late starters who still reached week 14
+      completedLateStart: learners.filter(l => l.reachedW14 && !l.startedW1).length
+    },
+    weeklyAttended: weekly,
+    stages: learners.reduce((o, l) => ((o[l.stage] = (o[l.stage] || 0) + 1), o), {}),
+    learners: learners.sort((a, b) => b.weeksAttended - a.weeksAttended || String(a.name).localeCompare(String(b.name)))
+  };
+}

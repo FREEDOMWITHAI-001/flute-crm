@@ -1190,6 +1190,26 @@
     }
 
     /* Calendar Session Grid */
+    /* 14-week journey */
+    .jr-funnel { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+    .jr-step { border: 1px solid var(--border-subtle); border-radius: 12px; padding: 14px; background: var(--bg-surface); }
+    .jr-step .n { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .jr-step .l { font-size: 12.5px; color: var(--text-muted); }
+    .jr-step .p { font-size: 12px; font-weight: 600; color: var(--accent); }
+    .jr-bars { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 6px; align-items: end; height: 150px; padding-top: 18px; }
+    .jr-bar { position: relative; background: var(--accent); border-radius: 6px 6px 2px 2px; min-height: 2px; }
+    .jr-bar.p2 { background: #2563EB; }
+    .jr-bar.none { background: var(--border-subtle); }
+    .jr-bar span { position: absolute; top: -17px; left: 50%; transform: translateX(-50%); font-size: 10.5px; color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .jr-axis { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 6px; font-size: 11px; color: var(--text-muted); text-align: center; margin-top: 4px; }
+    .jr-strip { display: inline-grid; grid-template-columns: repeat(7, 10px) 4px repeat(7, 10px); gap: 3px; align-items: center; white-space: nowrap; }
+    .jr-strip i { width: 10px; height: 10px; border-radius: 3px; background: var(--border-subtle); }
+    .jr-strip i.attended { background: var(--green); }
+    .jr-strip i.partial { background: var(--amber); }
+    .jr-strip i.missed { background: var(--red-bg); border: 1px solid var(--red-border); }
+    .jr-strip i.upcoming { background: transparent; border: 1px dashed var(--border-strong); }
+    .jr-strip i.gap { width: 4px; background: transparent; }
+
     /* Sessions: one card per phase, weeks × Sun/Tue/Thu */
     .sess-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .sess-filters .select-control { flex: 0 1 auto; min-width: 150px; }
@@ -1817,12 +1837,12 @@
       </div>`;
     }
     const PARTICIPANT_CAP = 200;
-    const ALL_DATA_KEYS = ["bootstrap", "overview", "sessions", "session", "learners", "learner", "lists", "review", "sync", "settings"];
+    const ALL_DATA_KEYS = ["bootstrap", "overview", "journey", "sessions", "session", "learners", "learner", "lists", "review", "sync", "settings"];
 
     const ROLE_ACCESS = {
-      "Admin": ["overview", "sessions", "session", "learners", "learner", "lists", "review", "sync", "settings"],
+      "Admin": ["overview", "sessions", "session", "journey", "learners", "learner", "lists", "review", "sync", "settings"],
       "Team member": ["lists"], // callers: the call lists only (no learner directory)
-      "Viewer": ["overview"]
+      "Viewer": ["overview", "journey"]
     };
     const ROLE_SUMMARY = {
       "Admin": "Everything, including Settings",
@@ -1833,6 +1853,7 @@
     const NAV_ITEMS = [
       { id: "overview", label: "Overview", hash: "#/overview", icon: "grid" },
       { id: "sessions", label: "Sessions", hash: "#/sessions", icon: "calendar" },
+      { id: "journey", label: "14-week journey", hash: "#/journey", icon: "list" },
       { id: "learners", label: "Learners", hash: "#/learners", icon: "users" },
       { id: "lists", label: "Lists", hash: "#/lists", icon: "list" },
       { id: "review", label: "Review Queue", hash: "#/review", icon: "inbox", badgeKey: "unmatched" },
@@ -1852,6 +1873,7 @@
     const SCREEN_TITLES = {
       overview: "Hackathon Overview",
       sessions: "Sessions Calendar & Metrics",
+      journey: "14-Week Journey of a Group",
       session: "Session Attendance Detail",
       learners: "Paid Learners Directory",
       learner: "Learner Profile",
@@ -1882,6 +1904,9 @@
       // Sessions
       sessionsView: "calendar",
       sessFilter: { type: "All", status: "All", host: "All" },
+      journeyStage: "All",
+      journeySearch: "",
+      journeyLimit: 50,
       sessionsSort: { key: "date", dir: "asc" },
       sessionParticipantSearch: "",
       sessionParticipantSort: { key: "totalMinutes", dir: "desc" },
@@ -3020,6 +3045,77 @@
       return "";
     }
 
+    const JOURNEY_STAGE_BADGE = {
+      "Completed": "badge-green", "In Phase 2": "badge-blue", "In Phase 1": "badge-teal", "Finished Phase 1": "badge-slate",
+      "Stopped in Phase 2": "badge-amber", "Did not continue": "badge-red", "Restarted next batch": "badge-slate"
+    };
+    function renderJourney(el, ctx) {
+      const { boot } = ctx;
+      if (!(boot.batches || []).length) { el.innerHTML = renderNoBatches(); return; }
+      const key = "journey:" + state.batchId;
+      const res = need(key, () => getJSON(`/api/batches/${state.batchId}/journey`));
+      if (gate(el, res, key)) return;
+      const j = res.data, c = j.cohort, f = j.funnel;
+      const pct = (a, b) => (b ? Math.round((a / b) * 100) + "%" : "—");
+      const p2Text = c.phase2Status === "Not set up" ? "next batch not set up yet" : `${fmtDate(c.phase2Start)} – ${fmtDate(c.phase2End)} (${c.phase2Status.toLowerCase()})`;
+      const max = Math.max(1, ...j.weeklyAttended.filter(v => v != null));
+      const heldW = i => j.weeklyAttended[i] != null;
+      const anyP2 = j.weeklyAttended.slice(7).some(v => v != null);
+      const step = (label, n, held, note) => `<div class="jr-step"><div class="l">${label}</div><div class="n">${held ? fmtNum(n) : "—"}</div><div class="p" style="${held ? "" : "color:var(--text-muted);"}">${held ? note : "not reached yet"}</div></div>`;
+      const q = state.journeySearch.trim().toLowerCase();
+      const rows = j.learners.filter(l => (state.journeyStage === "All" || l.stage === state.journeyStage)
+        && (!q || String(l.name).toLowerCase().includes(q) || String(l.email).toLowerCase().includes(q) || String(l.phone).includes(q)));
+      const pg = pageOf(rows, state.journeyLimit, 50);
+      const strip = l => `<span class="jr-strip" aria-label="${fmtNum(l.weeksAttended)} of 14 weeks attended">${l.weeks.map((w, i) => `${i === 7 ? '<i class="gap"></i>' : ""}<i class="${w.status}" title="Week ${w.label}: ${w.status}"></i>`).join("")}</span>`;
+      const stages = ["All", ...Object.keys(JOURNEY_STAGE_BADGE).filter(st => j.stages[st])];
+
+      el.innerHTML = `
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <h2 class="card-title">Group that started ${esc(fmtDate(c.startDate))}</h2>
+              <p class="card-subtitle">Weeks 1–7 (Phase 1, Straight): ${esc(fmtDate(c.startDate))} – ${esc(fmtDate(c.phase1End))} · Weeks 8–14 (Phase 2, Side): ${esc(p2Text)} · "attended a week" = ${esc(boot.rules.attendedMinMinutes)}+ min in a counted session</p>
+            </div>
+          </div>
+          <div class="jr-funnel">
+            <div class="jr-step"><div class="l">Started (attended week 1)</div><div class="n">${fmtNum(f.startedW1)}</div><div class="p">of ${fmtNum(f.learners)} paid in this group</div></div>
+            ${step("Still attending in week 7", f.reachedW7, heldW(6), `${pct(f.reachedW7, f.startedW1)} of starters`)}
+            ${step("Moved on to Phase 2 (weeks 8–14)", f.joinedPhase2, anyP2, `${pct(f.joinedPhase2, f.startedW1)} of starters`)}
+            ${step("Completed (attended week 14)", f.reachedW14, heldW(13), `${pct(f.reachedW14, f.startedW1)} of starters${f.completedLateStart ? ` · +${fmtNum(f.completedLateStart)} late starters also finished` : ""}`)}
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-header"><div><h2 class="card-title">People attending each week (W1 → W14)</h2><p class="card-subtitle">Teal = Phase 1 · Blue = Phase 2 · grey = not held yet</p></div></div>
+          <div class="jr-bars">${j.weeklyAttended.map((v, i) => `<div class="jr-bar ${v == null ? "none" : i >= 7 ? "p2" : ""}" style="height:${v == null ? 2 : Math.max(2, Math.round((v / max) * 130))}px"><span>${v == null ? "" : fmtNum(v)}</span></div>`).join("")}</div>
+          <div class="jr-axis">${j.weeklyAttended.map((_, i) => `<span>W${i + 1}</span>`).join("")}</div>
+        </section>
+        <section class="card" style="display:flex;flex-direction:column;gap:12px;">
+          <div class="toolbar" style="margin:0;">
+            <div class="sess-chips">${stages.map(st => `<button class="sess-chip" style="${state.journeyStage === st ? "border-color:var(--accent);color:var(--accent);" : ""}" onclick="setJourneyStage('${esc(st)}')">${esc(st)} <b>${fmtNum(st === "All" ? j.learners.length : j.stages[st])}</b></button>`).join("")}</div>
+            <input type="search" class="search-input" placeholder="Search name, email or phone…" value="${esc(state.journeySearch)}" oninput="setJourneySearch(this.value)" aria-label="Search learners" />
+          </div>
+          ${pagerHtml(rows.length, pg, 50, "gotoJourneyPage")}
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead><tr><th>Learner</th><th>Phone</th><th>Region</th><th>W1 ······ W7 · W8 ······ W14</th><th class="num">Weeks</th><th>Stage</th></tr></thead>
+              <tbody>
+                ${pg.rows.map(l => `
+                  <tr class="${isAdmin() ? "clickable-row" : ""}" ${isAdmin() ? `onclick="navigate('#/learner/${Number(l.id)}')"` : ""}>
+                    <td class="name-cell" title="${esc(l.name)}">${esc(l.name)}${l.lateStart ? '<span class="tag-soft">started late</span>' : ""}</td>
+                    <td class="tabular" style="white-space:nowrap;">${esc(l.phone || "—")}</td>
+                    <td>${esc(l.region || "—")}</td>
+                    <td>${strip(l)}</td>
+                    <td class="num"><strong>${fmtNum(l.weeksAttended)}</strong> / ${fmtNum(l.weeksHeld)}</td>
+                    <td><span class="badge ${JOURNEY_STAGE_BADGE[l.stage] || "badge-slate"}">${esc(l.stage)}</span></td>
+                  </tr>`).join("")}
+                ${!pg.rows.length ? '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:16px;">No learners match</td></tr>' : ""}
+              </tbody>
+            </table>
+          </div>
+          ${pagerHtml(rows.length, pg, 50, "gotoJourneyPage")}
+        </section>`;
+    }
+
     // How a session reads to a person: a past date with nothing in Zoom is simply "No session"
     function sessionState(s, today) {
       if (s.status === "Synced" || s.status === "Upcoming" || s.status === "Sync failed") return s.status;
@@ -3525,7 +3621,7 @@
                       </td>
                       <td>${esc(l.phase)}</td>
                       <td>${statusBadge(l.status)}</td>
-                      <td class="num">${fmtNum(l.weeksAttended)} / ${fmtNum(l.heldWeeks)}</td>
+                      <td class="num" title="Weeks attended out of the weeks held so far in this phase (7 per phase)"><strong>${fmtNum(l.weeksAttended)}</strong> / ${fmtNum(l.heldWeeks)}<div class="sub-cell">held so far · of 7</div></td>
                       <td>${renderHeatStrip(l.weeks)}</td>
                       <td class="num">${fmtNum(l.currentStreak)}w</td>
                       <td class="num">${fmtNum(l.totalMinutes)}m</td>
@@ -4970,6 +5066,7 @@
 
       if (screen === "overview") renderOverview(contentEl, ctx);
       else if (screen === "sessions") renderSessions(contentEl, ctx);
+      else if (screen === "journey") renderJourney(contentEl, ctx);
       else if (screen === "session") renderSessionDetail(contentEl, ctx);
       else if (screen === "learners") renderLearners(contentEl, ctx);
       else if (screen === "learner") renderLearnerProfile(contentEl, ctx);
@@ -5018,6 +5115,11 @@
         if (getRoute().screen === "settings") render(); else navigate("#/settings");
       },
       openListTab(id) { state.listsTab = id; state.listsSearch = ""; state.listsLimit = LIST_PAGE; navigate("#/lists"); },
+
+      // ----- Journey -----
+      setJourneyStage(v) { state.journeyStage = v; state.journeyLimit = 50; render(); },
+      setJourneySearch(v) { state.journeySearch = v; state.journeyLimit = 50; render(); },
+      gotoJourneyPage(n) { state.journeyLimit = n * 50; render(); pageScroller().scrollTo({ top: 0 }); },
 
       // ----- Batch break weeks -----
       async saveBreakWeeks(batchId) {
