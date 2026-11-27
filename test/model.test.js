@@ -145,15 +145,13 @@ test("learner statuses: active, late joiner, refunded, inactive, missed twice", 
 });
 
 test("a short week-1 visit is not a late joiner, even if 20+ minutes only comes in week 2", () => {
-  const extra = [
-    row("w1sun", "Farah", "farah@example.com", at("2026-12-06", "13:30"), at("2026-12-06", "13:42")),
-    row("w2sun", "Farah", "farah@example.com", at("2026-12-13", "13:30"), at("2026-12-13", "14:30"))
-  ];
+  // Chitra: 10 min in week 1 (already in the data), then a full week 2
+  const extra = [row("w2sun", "Chitra", "chitra@example.com", at("2026-12-13", "13:30"), at("2026-12-13", "14:30"))];
   const m = build({ rows: [...rows, ...extra] });
-  const farah = m.learners.find(l => l.id === 6 && l.phase === "Phase 1");
-  assert.equal(farah.firstJoinedWeek, 1);
-  assert.equal(farah.firstAttendedWeek, 2);
-  assert.notEqual(farah.status, "late_joiner");
+  const chitra = m.learners.find(l => l.id === 3 && l.phase === "Phase 1");
+  assert.equal(chitra.firstJoinedWeek, 1);
+  assert.equal(chitra.firstAttendedWeek, 2);
+  assert.notEqual(chitra.status, "late_joiner");
 });
 
 test("moved: a late joiner who shows up in the next batch's phase 1", () => {
@@ -163,12 +161,16 @@ test("moved: a late joiner who shows up in the next batch's phase 1", () => {
 
 test("phase summary: weekly counts, new vs returning, regions, rates", () => {
   const p1 = build().batch.phaseSummary.All.p1;
-  assert.deepEqual(p1.weeklySundayAttended, [4, 3, 1, null, null, null, null]);
-  assert.deepEqual(p1.weeklyNewVsReturning.map(w => [w.newCount, w.returningCount]), [[4, 0], [1, 2], [0, 1]]);
-  assert.equal(p1.w1Attended, 4);
+  // Counts are paid learners only (not refunded Esha, not unmatched Ravi / the host); unmatched reported separately
+  assert.deepEqual(p1.weeklySundayAttended, [2, 2, 1, null, null, null, null]);
+  assert.deepEqual(p1.weeklySundayUnmatched.slice(0, 3), [1, 1, 0]);
+  assert.deepEqual(p1.weeklyNewVsReturning.map(w => [w.newCount, w.returningCount]), [[2, 0], [1, 1], [0, 1]]);
+  assert.equal(p1.w1Attended, 2);
+  assert.equal(p1.denominator, p1.paid); // one denominator: paid learners in the phase
   assert.equal(p1.currentWeek, 3);
   assert.equal(p1.registered, 5);
-  assert.equal(p1.sessionTypeRates.sunday[0], 80);
+  assert.equal(p1.sessionTypeRates.sunday[0], Math.round((2 / p1.paid) * 100));
+  assert.ok(p1.sessionTypeRates.sunday.every(v => v == null || v <= 100));
   assert.equal(p1.lateJoiners, 1);
   const overseas = build().batch.phaseSummary.Overseas.p1;
   assert.deepEqual(overseas.weeklySundayAttended.slice(0, 3), [0, 0, 0]); // Chitra (US) never reached 20 min
@@ -218,4 +220,33 @@ test("late is measured from the scheduled class time; a host test-start doesn't 
   assert.equal(d.find(p => p.zoomEmail === "asha@example.com").late, false);
   assert.equal(d.find(p => p.zoomEmail === "dev@example.com").late, true);
   assert.equal(s.pctLate, 50);
+});
+
+test("no double counting: one phase per person, and a no-email second device merges into its owner", () => {
+  const extra = [
+    // Asha (Phase 1) also sits in the Phase 2 Sunday for 30 min — she must stay Phase 1 only
+    row("p2w1", "Asha Rao", "asha@example.com", at("2026-12-06", "15:30"), at("2026-12-06", "16:00")),
+    // Asha's tablet joins week 1 with no email under the same full name — same person, not a new one
+    row("w1sun", "Asha Rao", "", at("2026-12-06", "13:40"), at("2026-12-06", "14:50"))
+  ];
+  const m = build({ rows: [...rows, ...extra] });
+  const asha = m.learners.filter(l => l.id === 1);
+  assert.deepEqual(asha.map(l => l.phase), ["Phase 1"]);                       // never in both phases
+  const p1 = m.batch.phaseSummary.All.p1, p2 = m.batch.phaseSummary.All.p2;
+  const ids = ph => new Set(m.learners.filter(l => l.phase === ph && l.status !== "refunded").map(l => l.id));
+  assert.equal([...ids("Phase 1")].filter(id => ids("Phase 2").has(id)).length, 0);
+  assert.equal(p1.paid + p2.paid, new Set([...ids("Phase 1"), ...ids("Phase 2")]).size); // "All" total = unique people
+  const w1 = m.sessions.find(s => s.date === "2026-12-06" && s.slot === "learning_p1");
+  const people = m.sessionDetail.get(w1.id).participants;
+  assert.equal(people.filter(p => p.learnerId === 1).length, 1);               // tablet merged into Asha
+  assert.equal(people.filter(p => /asha/i.test(p.zoomName) && p.learnerId == null).length, 0);
+  const p2w1 = m.sessions.find(s => s.date === "2026-12-06" && s.slot === "learning_p2");
+  assert.equal(p2w1.otherPhaseAttended, 1);                                    // Asha shows as a visitor there
+});
+
+test("retention = week-1 learners still attending; never above 100% even when late joiners arrive", () => {
+  const p1 = build().batch.phaseSummary.All.p1;
+  // W1: Asha, Bala · W2: Asha, Dev (late joiner) · W3: Asha → 2 of 2, 1 of 2, 1 of 2 still coming
+  assert.deepEqual(p1.weeklyRetainedFromW1.slice(0, 3), [2, 1, 1]);
+  for (const v of p1.weeklyRetainedFromW1) assert.ok(v == null || v <= p1.w1Attended);
 });

@@ -1,7 +1,7 @@
 // Pure analytics: Zoom join/leave rows + learners + rules  →  everything the dashboard shows.
 // No I/O here, so every number on screen can be unit-tested from plain objects.
 import { istDate, istTime, istInstant, weekday, addDays, daysBetween, fmtShortDate } from "./time.js";
-import { buildLearnerIndex, resolveIdentity, normEmail, phoneKey, regionFor, normName } from "./match.js";
+import { buildLearnerIndex, resolveIdentity, normEmail, phoneKey, regionFor, normName, fullNameKey } from "./match.js";
 
 export const SLOTS = {
   learning_p1: { phase: "Phase 1", kind: "learning", label: "Learning Session (Phase 1 · Straight)" },
@@ -178,16 +178,35 @@ export function buildBatchModel(input) {
   // ---------- Participant rows → per person per session intervals ----------
   const people = new Map(); // personKey -> person
   const attendance = new Map(); // sessionId -> Map(personKey -> {intervals})
+  // Resolve every row once. A second device that joined with no email ("Narayan Bhat", no email) is the
+  // same person as the identified "Narayan Bhat" in the same session — merge it instead of counting twice.
+  const resolved = [];
+  const knownNameInSession = new Map(); // sessionId -> Map(fullName -> identity)
   for (const row of rows) {
     if (isStaffEmail(row.email)) continue; // Harsh's own host logins are not learners
     const s = instanceSession.get(row.instanceUuid);
     if (!s || !row.joinTime || !row.leaveTime) continue;
-    s.rowCount++;
-    if (!s.maxLeaveIso || new Date(row.leaveTime) > new Date(s.maxLeaveIso)) s.maxLeaveIso = row.leaveTime;
     const reg = row.registrantId ? registrantById.get(row.registrantId) : null;
     const email = row.email || reg?.email || "";
     const phone = reg?.phone || "";
     const id = resolveIdentity({ name: row.name, email, phone }, index, links);
+    resolved.push({ row, s, email, phone, id });
+    if (id.excluded || !email) continue;
+    if (!knownNameInSession.has(s.id)) knownNameInSession.set(s.id, new Map());
+    const names = knownNameInSession.get(s.id);
+    for (const n of [row.name, id.learnerId ? index.byId.get(id.learnerId)?.name : null]) {
+      const k = fullNameKey(n);
+      if (k && !names.has(k)) names.set(k, id);
+    }
+  }
+  for (const r of resolved) {
+    if (r.email || r.id.excluded || r.id.learnerId != null) continue;
+    const twin = knownNameInSession.get(r.s.id)?.get(fullNameKey(r.row.name));
+    if (twin) r.id = twin;
+  }
+  for (const { row, s, email, phone, id } of resolved) {
+    s.rowCount++;
+    if (!s.maxLeaveIso || new Date(row.leaveTime) > new Date(s.maxLeaveIso)) s.maxLeaveIso = row.leaveTime;
     if (id.excluded) continue;
 
     let p = people.get(id.personKey);
@@ -266,6 +285,10 @@ export function buildBatchModel(input) {
     }
 
     const attended = participants.filter(p => p.totalMinutes >= rules.attendedMinMinutes);
+    // Paid = matched to a TagMango learner who isn't refunded; everyone else is reported separately
+    const isPaid = p => p.learnerId != null && index.byId.get(p.learnerId)?.status !== "refunded";
+    const paidAttended = attended.filter(isPaid).length;
+    const unmatchedAttended = attended.filter(p => p.learnerId == null).length;
     const step = durationMin > 180 ? 5 : 1;
     const curve = [];
     if (participants.length) {
@@ -288,6 +311,9 @@ export function buildBatchModel(input) {
       registered: registeredMap.size,
       joined: s.hasData ? participants.length : null,
       attended: s.hasData ? attended.length : null,
+      paidAttended: s.hasData ? paidAttended : null,
+      unmatchedAttended: s.hasData ? unmatchedAttended : null,
+      cohort: null, // paid learners in this phase; filled in once rosters are known
       avgMinutes: s.hasData && participants.length ? Math.round(participants.reduce((t, p) => t + p.totalMinutes, 0) / participants.length) : null,
       peakConcurrent: s.hasData ? curve.reduce((mx, pt) => Math.max(mx, pt.count), 0) : null,
       classStartOffset,
@@ -303,12 +329,38 @@ export function buildBatchModel(input) {
   const heldByPhase = { "Phase 1": [], "Phase 2": [] };
   for (const s of sessionList) if (s.status === "Synced" && SESSION_TYPES.includes(s.type)) heldByPhase[s.phase].push(s);
 
-  const rosters = { "Phase 1": new Set(), "Phase 2": new Set() };
-  for (const [slot, regMap] of registeredBySlot) for (const key of regMap.keys()) if (key.startsWith("learner:")) rosters[SLOTS[slot].phase].add(key);
-  for (const s of sessionList) {
-    const det = sessionDetail.get(s.id);
-    for (const p of det.participants) if (p.learnerId != null) rosters[s.phase].add(p.personKey);
+  // Each learner belongs to ONE phase: where they spent the most Sunday Learning minutes, then the most
+  // minutes overall, then where they registered. Visits to the other phase's sessions don't make them a member there.
+  const phaseMinutes = new Map(); // personKey -> { sun: {P1,P2}, all: {P1,P2}, last: {date, phase} }
+  for (const [key, list] of personSessions) {
+    if (!key.startsWith("learner:")) continue;
+    const pm = { sun: { "Phase 1": 0, "Phase 2": 0 }, all: { "Phase 1": 0, "Phase 2": 0 }, last: null };
+    for (const x of list) {
+      pm.all[x.phase] += x.minutes;
+      if (x.type === "Sunday Learning") pm.sun[x.phase] += x.minutes;
+      if (x.minutes > 0 && (!pm.last || x.date > pm.last.date)) pm.last = x;
+    }
+    phaseMinutes.set(key, pm);
   }
+  const registeredPhases = new Map(); // personKey -> Set(phase)
+  for (const [slot, regMap] of registeredBySlot) for (const key of regMap.keys()) {
+    if (!key.startsWith("learner:")) continue;
+    if (!registeredPhases.has(key)) registeredPhases.set(key, new Set());
+    registeredPhases.get(key).add(SLOTS[slot].phase);
+  }
+  const memberPhase = new Map();
+  for (const key of new Set([...phaseMinutes.keys(), ...registeredPhases.keys()])) {
+    const pm = phaseMinutes.get(key);
+    const reg = registeredPhases.get(key) || new Set();
+    const pick = (a, b) => (a > b ? "Phase 1" : b > a ? "Phase 2" : null);
+    memberPhase.set(key,
+      (pm && pick(pm.sun["Phase 1"], pm.sun["Phase 2"])) ||
+      (pm && pick(pm.all["Phase 1"], pm.all["Phase 2"])) ||
+      (reg.size === 1 ? [...reg][0] : null) ||
+      (pm && pm.last ? pm.last.phase : "Phase 1"));
+  }
+  const rosters = { "Phase 1": new Set(), "Phase 2": new Set() };
+  for (const [key, phase] of memberPhase) rosters[phase].add(key);
 
   const isDnc = l => (normEmail(l.email) && dnc.has(`email:${normEmail(l.email)}`)) || (phoneKey(l.phone) && dnc.has(`phone:${phoneKey(l.phone)}`));
   const learnerRows = [];
@@ -354,6 +406,9 @@ export function buildBatchModel(input) {
       const joined = mine.filter(x => x.minutes > 0).sort((a, b) => a.date.localeCompare(b.date));
       const firstJoinedWeek = joined.length ? joined[0].week : null;
       const lastAttended = attendedSessions.length ? attendedSessions[attendedSessions.length - 1] : null;
+      const lastSunday = attendedSessions.filter(x => x.type === "Sunday Learning").pop();
+      // Came to a Tue/Thu practice (20+ min) after their last attended Sunday
+      const practiceSinceLastSunday = attendedSessions.some(x => x.type !== "Sunday Learning" && (!lastSunday || x.date > lastSunday.date));
 
       const regHeld = regSeq.length;
       const regularityScore = regHeld
@@ -376,7 +431,12 @@ export function buildBatchModel(input) {
         paymentDate: learner.paymentDate || "", paymentPlatform: learner.platform || "TagMango",
         weeksAttended, heldWeeks: heldWeeks.length, currentStreak, totalMinutes: mine.reduce((t, x) => t + x.minutes, 0),
         regularityScore, isRegular: bestRegularRun >= rules.regularStreakWeeks, bestRegularRun,
-        missedStreak, isMissedTwice: firstAttendedWeek != null && missedStreak >= rules.missedTwiceCount,
+        missedStreak,
+        // Call list = just dropped off: missed the last N (or N+1) Sunday sessions in a row after attending before.
+        // Missing more than that = "dropped off" (separate list); late joiners restart next batch instead.
+        isMissedTwice: firstAttendedWeek != null && missedStreak >= rules.missedTwiceCount && missedStreak < rules.missedTwiceCount + 2,
+        droppedOff: firstAttendedWeek != null && missedStreak >= rules.missedTwiceCount + 2,
+        practiceSinceLastSunday,
         firstAttendedWeek, firstJoinedWeek, lastAttendedDate: lastAttended?.date || null,
         lastAttended: lastAttended ? `Week ${phase === "Phase 2" ? lastAttended.week + WEEKS : lastAttended.week} · ${fmtShortDate(lastAttended.date)}` : "Never",
         matchMethod: people.get(personKey)?.via || "none",
@@ -396,10 +456,13 @@ export function buildBatchModel(input) {
       const learningSlot = phase === "Phase 1" ? "learning_p1" : "learning_p2";
       const practiceSlot = phase === "Phase 1" ? "practice_p1" : "practice_p2";
       const regCount = slot => [...(registeredBySlot.get(slot) || new Map()).values()].filter(r => region === "All" || r === region).length;
-      const registered = regCount(learningSlot);
-      const denominator = registered || rows_.length;
+      const registered = regCount(learningSlot); // Zoom registrations: informational (compulsory only from 15 Nov)
+      const cohort = rows_.filter(r => r.status !== "refunded").length;
+      const denominator = cohort;
+      const paidP = p => p.learnerId != null && index.byId.get(p.learnerId)?.status !== "refunded" && memberPhase.get(p.personKey) === phase;
 
-      const weekly = [], newVsRet = [], funnel = {}, rates = { sunday: [], tuesday: [], thursday: [] };
+      const weekly = [], weeklyUnmatched = [], weeklyRetained = [], newVsRet = [], funnel = {}, rates = { sunday: [], tuesday: [], thursday: [] };
+      let w1People = null; // paid learners who attended week 1 — the cohort retention is measured against
       const seen = new Set();
       let minutesSum = 0, minutesN = 0, stayed = 0;
       for (let w = 1; w <= WEEKS; w++) {
@@ -407,21 +470,25 @@ export function buildBatchModel(input) {
         const typeRate = (type, slot) => {
           const s = held.find(x => x.week === w && x.type === type);
           if (!s) return null;
-          const att = sessionDetail.get(s.id).participants.filter(p => inRegion(p) && p.totalMinutes >= rules.attendedMinMinutes).length;
-          return pct(att, regCount(slot) || rows_.length) ?? 0;
+          const att = sessionDetail.get(s.id).participants.filter(p => inRegion(p) && paidP(p) && p.totalMinutes >= rules.attendedMinMinutes).length;
+          return pct(att, cohort) ?? 0;
         };
         rates.sunday.push(typeRate("Sunday Learning", learningSlot));
         rates.tuesday.push(typeRate("Tuesday Practice", practiceSlot));
         rates.thursday.push(typeRate("Thursday Q&A", practiceSlot));
-        if (!sun) { weekly.push(null); continue; }
-        const parts = sessionDetail.get(sun.id).participants.filter(inRegion);
+        if (!sun) { weekly.push(null); weeklyUnmatched.push(null); weeklyRetained.push(null); continue; }
+        const everyone = sessionDetail.get(sun.id).participants.filter(inRegion);
+        weeklyUnmatched.push(everyone.filter(p => p.learnerId == null && p.totalMinutes >= rules.attendedMinMinutes).length);
+        const parts = everyone.filter(paidP);
         const att = parts.filter(p => p.totalMinutes >= rules.attendedMinMinutes);
         weekly.push(att.length);
+        if (w === 1) w1People = new Set(att.map(p => p.personKey));
+        weeklyRetained.push(w1People ? att.filter(p => w1People.has(p.personKey)).length : null);
         let newCount = 0;
         for (const p of att) { if (!seen.has(p.personKey)) newCount++; }
         att.forEach(p => seen.add(p.personKey));
         newVsRet.push({ week: w, label: phase === "Phase 2" ? w + WEEKS : w, newCount, returningCount: att.length - newCount });
-        funnel[w] = { registered, joined: parts.length, attended20: att.length, stayed60: parts.filter(p => p.totalMinutes >= rules.regularMinMinutes).length };
+        funnel[w] = { cohort, registered, joined: parts.length, attended20: att.length, stayed60: parts.filter(p => p.totalMinutes >= rules.regularMinMinutes).length, unmatchedAttended: weeklyUnmatched[w - 1] };
         for (const p of att) { minutesSum += p.totalMinutes; minutesN++; if (p.totalMinutes >= rules.regularMinMinutes) stayed++; }
       }
       const heldIdx = weekly.map((v, i) => (v == null ? -1 : i)).filter(i => i >= 0);
@@ -430,10 +497,13 @@ export function buildBatchModel(input) {
         label: phase === "Phase 1" ? "Phase 1 · Straight Flute (new cohort, weeks 1–7)" : "Phase 2 · Side Flute (previous cohort, weeks 8–14)",
         weekOffset: phase === "Phase 2" ? WEEKS : 0,
         configured: phase === "Phase 1" ? (slotsConfigured.has("learning_p1") || slotsConfigured.has("practice_p1")) : (slotsConfigured.has("learning_p2") || slotsConfigured.has("practice_p2")),
-        paid: rows_.length,
+        paid: cohort,
         refunded: rows_.filter(r => r.status === "refunded").length,
         registered,
         denominator,
+        weeklySundayUnmatched: weeklyUnmatched,
+        // Of the week-1 attendees, how many attended each later Sunday (null until week 1 is synced)
+        weeklyRetainedFromW1: weeklyRetained,
         w1Attended: weekly[0] ?? 0,
         w1Synced: weekly[0] != null,
         firstSyncedWeek: heldIdx.length ? heldIdx[0] + 1 : null,
@@ -448,6 +518,19 @@ export function buildBatchModel(input) {
         sessionTypeRates: rates
       };
     }
+  }
+
+  // Each session's % uses the paid learners of its phase (All regions)
+  const cohortByPhase = { "Phase 1": phaseSummary.All.p1.paid, "Phase 2": phaseSummary.All.p2.paid };
+  for (const s of sessionList) {
+    s.cohort = cohortByPhase[s.phase];
+    const d = sessionDetail.get(s.id);
+    if (!d) continue;
+    d.cohort = s.cohort;
+    if (!s.hasData && s.status !== "Synced") continue;
+    const att = d.participants.filter(p => p.totalMinutes >= rules.attendedMinMinutes && p.learnerId != null && index.byId.get(p.learnerId)?.status !== "refunded");
+    s.paidAttended = d.paidAttended = att.filter(p => memberPhase.get(p.personKey) === s.phase).length;
+    s.otherPhaseAttended = d.otherPhaseAttended = att.length - s.paidAttended;
   }
 
   // ---------- People without a learner match ----------
@@ -479,7 +562,8 @@ export function buildBatchModel(input) {
   const contactable = learnerRows.filter(r => !r.doNotContact && r.status !== "refunded");
   const lists = {
     dncExcludedCount: learnerRows.filter(r => r.doNotContact).length,
-    missedTwice: contactable.filter(r => r.isMissedTwice && r.status !== "moved"),
+    missedTwice: contactable.filter(r => r.isMissedTwice && r.status !== "moved" && r.status !== "late_joiner"),
+    droppedOff: contactable.filter(r => r.droppedOff && r.status !== "moved" && r.status !== "late_joiner"),
     diamondShowcase: contactable.filter(r => r.isRegular).sort((a, b) => b.regularityScore - a.regularityScore || b.totalMinutes - a.totalMinutes),
     lateJoiners: contactable.filter(r => r.status === "late_joiner" || r.status === "moved"),
     notPaid: unmatched.filter(u => u.sessionsAttended > 0).map(u => ({ ...u, note: "No TagMango match" })),

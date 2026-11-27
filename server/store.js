@@ -136,7 +136,7 @@ export async function overview(batchId) {
   let prevBatch = null;
   if (prev) {
     const pm = await modelFor(prev.id);
-    const curve = s => (s.w1Attended ? s.weeklySundayAttended.map(v => (v == null ? null : Math.round((v / s.w1Attended) * 100))) : null);
+    const curve = s => (s.w1Attended && s.weeklyRetainedFromW1 ? s.weeklyRetainedFromW1.map(v => (v == null ? null : Math.round((v / s.w1Attended) * 100))) : null);
     const p1 = curve(pm.batch.phaseSummary.All.p1), p2 = curve(pm.batch.phaseSummary.All.p2);
     if (p1 || p2) prevBatch = { shortName: pm.batch.shortName, curve: { p1, p2 } };
   }

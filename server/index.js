@@ -168,7 +168,7 @@ export function createApp() {
     const label = loadZoomAccounts().find(a => a.key === s.zoomAccount)?.label || s.zoomAccount;
     res.json({ ...s, zoomAccountLabel: label });
   }));
-  app.get("/api/batches/:id/learners", requireRole("Admin", "Team member"), withBatch((req, res, m) => res.json({ learners: m.learners })));
+  app.get("/api/batches/:id/learners", ADMIN, withBatch((req, res, m) => res.json({ learners: m.learners })));
   app.get("/api/learners/search", ADMIN, h(async (req, res) => {
     const term = `%${String(req.query.q || "").trim()}%`;
     if (term.length < 4) return res.json({ results: [] });
@@ -177,7 +177,7 @@ export function createApp() {
         WHERE name ILIKE $1 OR email ILIKE $1 OR phone ILIKE $1 ORDER BY name LIMIT 20`, [term]);
     res.json({ results });
   }));
-  app.get("/api/learners/:id", requireRole("Admin", "Team member"), h(async (req, res) => {
+  app.get("/api/learners/:id", ADMIN, h(async (req, res) => {
     const p = await store.learnerProfile(Number(req.params.id), Number(req.query.batchId));
     if (!p) return res.status(404).json({ error: "Learner not found" });
     res.json(p);
@@ -185,7 +185,44 @@ export function createApp() {
   app.get("/api/batches/:id/lists", requireRole("Admin", "Team member"), h(async (req, res) => {
     const out = await store.lists(Number(req.params.id));
     if (!out) return res.status(404).json({ error: "Batch not found" });
-    res.json(out);
+    // Latest call per learner, so the call list shows who has already been called
+    const calls = await q(
+      `SELECT DISTINCT ON (learner_id) learner_id AS "learnerId", outcome, reason, follow_up::text AS "followUp",
+              caller_name AS "callerName", called_at AS "calledAt",
+              count(*) OVER (PARTITION BY learner_id)::int AS "callCount"
+         FROM call_logs ORDER BY learner_id, called_at DESC`);
+    res.json({ ...out, calls: Object.fromEntries(calls.map(c => [c.learnerId, c])) });
+  }));
+
+  // ---------- Call outcomes (a person calls; the reason is logged; attendance is never rewritten) ----------
+  const CALL_OUTCOMES = ["Reached – will rejoin", "Reached – call back later", "Reached – not continuing", "No answer", "Wrong or invalid number", "Asked not to be called"];
+  const CALL_REASONS = ["Busy / schedule clash", "Health or personal", "Zoom / technical trouble", "Finds it too hard", "Lost interest", "Joins with another email", "Other"];
+  app.get("/api/calls/options", requireRole("Admin", "Team member"), (req, res) => res.json({ outcomes: CALL_OUTCOMES, reasons: CALL_REASONS }));
+  app.get("/api/learners/:id/calls", requireRole("Admin", "Team member"), h(async (req, res) => {
+    res.json({ calls: await q(
+      `SELECT id, outcome, reason, follow_up::text AS "followUp", note, caller_name AS "callerName", called_at AS "calledAt", phase, batch_id AS "batchId"
+         FROM call_logs WHERE learner_id = $1 ORDER BY called_at DESC`, [Number(req.params.id)]) });
+  }));
+  app.post("/api/calls", requireRole("Admin", "Team member"), h(async (req, res) => {
+    const b = req.body || {};
+    const learner = await q1(`SELECT id, email, phone FROM learners WHERE id = $1`, [Number(b.learnerId)]);
+    if (!learner) throw bad("Learner not found", 404);
+    if (!CALL_OUTCOMES.includes(b.outcome)) throw bad("Pick an outcome");
+    if (b.reason && !CALL_REASONS.includes(b.reason)) throw bad("Unknown reason");
+    if (b.followUp && !/^\d{4}-\d{2}-\d{2}$/.test(b.followUp)) throw bad("Follow-up date must be YYYY-MM-DD");
+    const row = await q1(
+      `INSERT INTO call_logs (learner_id, batch_id, phase, caller_id, caller_name, outcome, reason, follow_up, note)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [learner.id, b.batchId ? Number(b.batchId) : null, b.phase || null, req.user.id, req.user.name || req.user.email,
+       b.outcome, b.reason || null, b.followUp || null, String(b.note || "").slice(0, 1000) || null]);
+    // "Asked not to be called" goes straight onto the do-not-contact list
+    if (b.outcome === "Asked not to be called") {
+      for (const key of [normEmail(learner.email) && `email:${normEmail(learner.email)}`, phoneKey(learner.phone) && `phone:${phoneKey(learner.phone)}`].filter(Boolean)) {
+        await q(`INSERT INTO dnc (key, note) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`, [key, `Asked on a call (${req.user.name || req.user.email})`]);
+      }
+      store.invalidate();
+    }
+    res.json({ id: row.id });
   }));
   app.get("/api/batches/:id/review", ADMIN, h(async (req, res) => {
     const items = await store.reviewItems(Number(req.params.id));

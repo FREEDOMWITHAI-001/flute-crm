@@ -59,7 +59,8 @@ export function fixEmailTypos(email) {
     .replace(/@(gmai|gmial|gmsil|gmqil|gmal|gamil|gnail|gmaill|g\.mail)\.(com|con|cpm|om|co|cm)$/, "@gmail.com")
     .replace(/@gmail\.(con|cpm|om|co|cm|comg)$/, "@gmail.com")
     .replace(/@(hotmsil|hitmail|hotmial|hotmil|hotmai)\.(com|con)$/, "@hotmail.com")
-    .replace(/@(yahoo|hotmail|outlook|rediffmail|icloud)\.(con|cpm|om|cm)$/, "@$1.com");
+    .replace(/@(yahoo|hotmail|outlook|rediffmail|icloud)\.(con|cpm|om|cm)$/, "@$1.com")
+    .replace(/\.(comm|coom|comn|xom|vom)$/, ".com");
 }
 
 /** Full-name key for name matching: needs 2+ real words ("Kumodini Jain", not "K M" or "Preeti"). */

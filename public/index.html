@@ -984,10 +984,27 @@
       text-align: right;
     }
     .name-cell {
-      max-width: 240px;
+      min-width: 160px;
+      max-width: 260px;
       font-weight: 600;
-      word-break: break-word;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
+    .email-cell { white-space: nowrap; font-size: 12.5px; color: var(--text-muted); }
+    .table-wrap { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+    .table-wrap::-webkit-scrollbar { height: 10px; }
+    .table-wrap::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 10px; border: 2px solid var(--bg-surface); }
+    .tag-soft { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--blue-bg); color: var(--blue); margin-left: 6px; white-space: nowrap; }
+    .call-cell { white-space: nowrap; font-size: 12px; }
+    .call-cell .sub-cell { white-space: nowrap; }
+    dialog.call-dialog { border: 1px solid var(--border-subtle); border-radius: 16px; padding: 0; width: min(460px, calc(100vw - 32px)); background: var(--bg-surface); color: var(--text-primary); box-shadow: 0 24px 64px -16px rgba(15,23,42,.35); }
+    dialog.call-dialog::backdrop { background: var(--bg-overlay); }
+    .call-form { display: flex; flex-direction: column; gap: 14px; padding: 22px; }
+    .call-form h2 { margin: 0; font-size: 17px; }
+    .call-form .field-group { display: flex; flex-direction: column; gap: 6px; }
+    .call-form textarea { min-height: 70px; resize: vertical; font: inherit; }
+    .call-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
     .sub-cell {
       font-size: 12px;
       color: var(--text-muted);
@@ -1803,12 +1820,12 @@
 
     const ROLE_ACCESS = {
       "Admin": ["overview", "sessions", "session", "learners", "learner", "lists", "review", "sync", "settings"],
-      "Team member": ["learners", "learner", "lists"],
+      "Team member": ["lists"], // callers: the call lists only (no learner directory)
       "Viewer": ["overview"]
     };
     const ROLE_SUMMARY = {
       "Admin": "Everything, including Settings",
-      "Team member": "Learners, learner profiles and Lists",
+      "Team member": "Call lists only (can log calls)",
       "Viewer": "Overview only"
     };
 
@@ -2509,6 +2526,11 @@
         const vals = parts.map(p => (p.weeklySundayAttended || [])[i]);
         weekly.push(vals.every(v => v == null) ? null : vals.reduce((t, v) => t + (v || 0), 0));
       }
+      const retained = [];
+      for (let i = 0; i < weeks; i++) {
+        const vals = parts.map(p => (p.weeklyRetainedFromW1 || [])[i]);
+        retained.push(vals.every(v => v == null) ? null : vals.reduce((t, v) => t + (v || 0), 0));
+      }
       const newRet = [];
       for (let w = 1; w <= weeks; w++) {
         const entries = parts.map(p => (p.weeklyNewVsReturning || []).find(x => Number(x.week) === w)).filter(Boolean);
@@ -2531,9 +2553,11 @@
         denominator: sum("denominator"),
         lateJoiners: sum("lateJoiners"),
         w1: sum("w1Attended"),
+        w1Unmatched: parts.reduce((t, p) => t + (((p.weeklySundayUnmatched || [])[0]) || 0), 0),
         w1Synced: parts.every(p => p.w1Synced !== false),
         firstSyncedWeek: Math.min(...parts.map(p => p.firstSyncedWeek || 99)),
         weekly,
+        retained,
         newRet,
         currentWeek,
         current: currentWeek ? weekly[currentWeek - 1] : null,
@@ -2603,9 +2627,15 @@
       const agg = aggregatePhases(batch);
       const wl = w => phaseWeekLabel(w, agg.offset2);
       const den = agg.denominator;
-      const denWord = agg.registered > 0 ? "registered" : "paid";
+      const denWord = "paid learners";
       const noW1 = !agg.w1Synced; // week 1 isn't in Zoom (ran before tracking started), so W1-based numbers can't be computed
-      const retentionPct = !noW1 && agg.w1 && agg.current != null ? Math.round((agg.current / agg.w1) * 100) : null;
+      // Each phase is its own cohort, so retention is never blended across Phase 1 and Phase 2
+      const retOf = p => (p && p.w1Synced !== false && p.w1Attended && p.currentWeek)
+        ? Math.round((((p.weeklyRetainedFromW1 || [])[p.currentWeek - 1] ?? 0) / p.w1Attended) * 100) : null;
+      const splitRet = state.phase === "All" && agg.p1 && agg.p2;
+      const retainedNow = agg.currentWeek ? agg.retained[agg.currentWeek - 1] : null;
+      const retentionPct = splitRet ? retOf(agg.p1) : (!noW1 && agg.w1 && retainedNow != null ? Math.round((retainedNow / agg.w1) * 100) : null);
+      const fmtRet = v => (v == null ? "—" : v + "%");
       const goal = meta.goalRetentionPct;
       const baseline = meta.baselineRetentionPct;
       const retentionBadgeCls = retentionPct == null ? "badge-slate"
@@ -2615,12 +2645,12 @@
       html += `
         <section class="kpi-grid" aria-label="Batch health metrics">
           <div class="kpi-card">
-            <div class="kpi-label"><span>${agg.registered > 0 ? "Registered for Sunday sessions" : "Paid learners (no Zoom registrants)"}</span></div>
+            <div class="kpi-label"><span>Paid learners in this batch</span></div>
             <div class="kpi-value-row">
               <span class="kpi-primary tabular">${fmtNum(den)}</span>
-              <span class="kpi-counts">${fmtNum(agg.paid)} paid learners matched</span>
+              <span class="kpi-counts">${fmtNum(agg.registered)} registered on Zoom</span>
             </div>
-            <div class="kpi-foot">${fmtNum(agg.refunded)} refunded · rates below are % of ${denWord}</div>
+            <div class="kpi-foot">${fmtNum(agg.refunded)} refunded (excluded) · every % below is of these paid learners</div>
           </div>
 
           <div class="kpi-card">
@@ -2629,7 +2659,7 @@
               <span class="kpi-primary tabular">${noW1 ? "—" : fmtPct(agg.w1, den)}</span>
               <span class="kpi-counts">${noW1 ? "Not in Zoom yet" : `${fmtNum(agg.w1)} of ${fmtNum(den)} ${denWord}`}</span>
             </div>
-            <div class="kpi-foot">${noW1 ? `Zoom data starts at week ${esc(agg.firstSyncedWeek)} · weeks before need backfill` : `Sunday Learning (≥${esc(rules.attendedMinMinutes)} min)`}</div>
+            <div class="kpi-foot">${noW1 ? `Zoom data starts at week ${esc(agg.firstSyncedWeek)} · weeks before need backfill` : `Sunday Learning (≥${esc(rules.attendedMinMinutes)} min)${agg.w1Unmatched ? ` · +${fmtNum(agg.w1Unmatched)} attendees not matched to a paid learner` : ""}`}</div>
           </div>
 
           <div class="kpi-card">
@@ -2644,10 +2674,10 @@
           <div class="kpi-card">
             <div class="kpi-label"><span>${agg.currentWeek ? `${esc(wl(1))} → ${esc(wl(agg.currentWeek))} retention` : "Retention"}</span>${goal != null ? `<span class="badge ${retentionBadgeCls}">Goal ${esc(goal)}%</span>` : ""}</div>
             <div class="kpi-value-row">
-              <span class="kpi-primary tabular">${retentionPct == null ? "—" : retentionPct + "%"}</span>
-              <span class="kpi-counts">${noW1 ? "Needs week-1 data" : `${fmtNum(agg.current)} of ${fmtNum(agg.w1)} week-1 attendees`}</span>
+              <span class="kpi-primary tabular">${splitRet ? `P1 ${fmtRet(retOf(agg.p1))} · P2 ${fmtRet(retOf(agg.p2))}` : fmtRet(retentionPct)}</span>
+              <span class="kpi-counts">${noW1 ? "Needs week-1 data" : splitRet ? "Each phase is its own cohort" : `${fmtNum(retainedNow)} of ${fmtNum(agg.w1)} week-1 attendees still coming`}</span>
             </div>
-            <div class="kpi-foot">${baseline != null && goal != null ? `Target: lift ${esc(baseline)}% baseline → ${esc(goal)}%` : "&nbsp;"}</div>
+            <div class="kpi-foot">Week-1 learners who attended the latest Sunday${baseline != null && goal != null ? ` · target ${esc(baseline)}% → ${esc(goal)}%` : ""}</div>
           </div>
 
           <div class="kpi-card">
@@ -2686,14 +2716,14 @@
           const weekly = p.weeklySundayAttended || [];
           const cw = p.currentWeek || 0;
           const pNoW1 = p.w1Synced === false;
-          const ret = !pNoW1 && p.w1Attended && cw ? Math.round(((weekly[cw - 1] ?? p.currentWeekAttended) / p.w1Attended) * 100) : null;
+          const ret = !pNoW1 && p.w1Attended && cw ? Math.round((((p.weeklyRetainedFromW1 || [])[cw - 1] ?? 0) / p.w1Attended) * 100) : null;
           const off = p.weekOffset || 0;
           return `
             <div class="card">
               <div class="card-header">
                 <div>
                   <h2 class="card-title">${esc(p.label)}</h2>
-                  <p class="card-subtitle">${p.configured ? `${fmtNum(p.denominator)} ${p.registered > 0 ? "registered" : "paid"} · ${fmtNum(p.paid)} paid matched` : "No Zoom meetings linked for this phase"}</p>
+                  <p class="card-subtitle">${p.configured ? `${fmtNum(p.paid)} paid learners · ${fmtNum(p.registered)} registered on Zoom` : "No Zoom meetings linked for this phase"}</p>
                 </div>
                 <span class="badge ${badgeCls}">${badgeText}</span>
               </div>
@@ -2756,15 +2786,15 @@
       agg.parts.forEach(p => Object.keys(p.funnelByWeek || {}).forEach(k => fWeeks.add(Number(k))));
       const availableWeeks = [...fWeeks].filter(n => !Number.isNaN(n)).sort((a, b) => a - b);
       const selectedWeek = availableWeeks.includes(state.overviewFunnelWeek) ? state.overviewFunnelWeek : availableWeeks[availableWeeks.length - 1];
-      const funnel = { registered: 0, joined: 0, attended20: 0, stayed60: 0 };
+      const funnel = { cohort: 0, registered: 0, joined: 0, attended20: 0, stayed60: 0, unmatchedAttended: 0 };
       agg.parts.forEach(p => {
         const f = (p.funnelByWeek || {})[selectedWeek];
         if (!f) return;
         Object.keys(funnel).forEach(k => { funnel[k] += Number(f[k]) || 0; });
       });
-      const fBase = funnel.registered || den;
+      const fBase = funnel.cohort || den;
       const funnelStages = [
-        { label: funnel.registered ? "Registered on Zoom" : "Paid learners (no registrants)", val: fBase, color: "var(--accent)" },
+        { label: "Paid learners in this phase", val: fBase, color: "var(--accent)" },
         { label: "Joined Zoom call", val: funnel.joined, color: "#0D9488" },
         { label: `Attended (${rules.attendedMinMinutes}+ min)`, val: funnel.attended20, color: "#16A34A" },
         { label: `Stayed (${rules.regularMinMinutes}+ min)`, val: funnel.stayed60, color: "#15803D" }
@@ -2776,7 +2806,7 @@
             <div class="card-header">
               <div>
                 <h2 class="card-title">Weekly Attendance Funnel</h2>
-                <p class="card-subtitle">Sunday Learning · registered → joined → attended → stayed</p>
+                <p class="card-subtitle">Sunday Learning · paid learners → joined → attended → stayed${funnel.unmatchedAttended ? ` · +${fmtNum(funnel.unmatchedAttended)} unmatched attendees not counted` : ""}</p>
               </div>
               ${availableWeeks.length ? `
                 <select class="select-control" id="funnel-week" aria-label="Select funnel week" onchange="changeFunnelWeek(this.value)">
@@ -2865,7 +2895,7 @@
       const labels = Array.from({ length: agg.weeks }, (_, i) => phaseWeekLabel(i + 1, agg.offset2));
       const legend = { position: "bottom", labels: { color: tickColor, boxWidth: 12, font: { size: 11 } } };
 
-      const retentionSeries = agg.weekly.map(v => (v != null && agg.w1 ? Math.round((v / agg.w1) * 100) : null));
+      const retentionSeries = agg.retained.map(v => (v != null && agg.w1 ? Math.round((v / agg.w1) * 100) : null));
       const datasets = [{
         label: `${batch.shortName} (% of week 1)`,
         data: retentionSeries,
@@ -3094,11 +3124,12 @@
                 <div class="sess-sub">${esc(when)} · ${esc(note)}</div>
               </td>`;
           }
-          const pct = s.registered ? Math.round((s.attended / s.registered) * 100) : null;
+          const paidN = s.paidAttended ?? s.attended;
+          const pct = s.cohort ? Math.round((paidN / s.cohort) * 100) : null;
           return `
             <td class="sess-cell open ${dim}" role="link" tabindex="0" data-hash="${esc(openHash(s))}" onclick="navigate(this.dataset.hash)" onkeydown="if(event.key==='Enter')navigate(this.dataset.hash)" title="${esc(s.type)} · ${esc(when)} · ${esc(s.host)}">
-              <div class="sess-num">${fmtNum(s.attended)}${pct != null ? ` <span>${pct}%</span>` : ""}</div>
-              <div class="sess-sub">${esc(when)} · ${fmtNum(s.joined)} joined</div>
+              <div class="sess-num">${fmtNum(paidN)}${pct != null ? ` <span>${pct}%</span>` : ""}</div>
+              <div class="sess-sub" title="Unmatched = no paid learner found · other phase = paid learners who belong to the other phase">${esc(when)} · ${fmtNum(s.joined)} joined${s.unmatchedAttended ? ` · +${fmtNum(s.unmatchedAttended)} unmatched` : ""}${s.otherPhaseAttended ? ` · +${fmtNum(s.otherPhaseAttended)} other phase` : ""}</div>
               <div class="sess-bar"><i style="width:${Math.min(100, pct ?? 0)}%"></i></div>
             </td>`;
         };
@@ -3115,7 +3146,7 @@
                   <h2 class="card-title">${p1 ? "Phase 1 · Straight Flute" : "Phase 2 · Side Flute"}
                     <span class="badge ${p1 ? "badge-teal" : "badge-blue"}" style="margin-left:6px;">${p1 ? "Weeks 1–7 · new cohort" : "Weeks 8–14 · previous cohort"}</span>
                   </h2>
-                  <p class="card-subtitle">Sunday ${esc(timeOrTbc(first.startTime))} · big number = attended ${esc(rules.attendedMinMinutes)}+ min · % of registered</p>
+                  <p class="card-subtitle">Sunday ${esc(timeOrTbc(first.startTime))} · big number = paid learners attending ${esc(rules.attendedMinMinutes)}+ min · % of the phase's paid learners</p>
                 </div>
                 <span class="sess-host">${iconSvg("video", 13)} ${esc([...new Set(ps.map(s => s.host))].join(", "))}</span>
               </div>
@@ -3167,7 +3198,7 @@
                       <td><span class="sess-chip" style="padding:2px 8px;"><span class="sess-dot" style="background:${SESS_STATE_DOT[s.view]}"></span>${esc(s.view)}</span></td>
                       <td class="num">${fmtNum(s.registered)}</td>
                       <td class="num">${canOpen ? fmtNum(s.joined) : "—"}</td>
-                      <td class="num">${canOpen && s.attended != null ? `<strong>${fmtNum(s.attended)}</strong> (${fmtPct(s.attended, s.registered)})` : "—"}</td>
+                      <td class="num">${canOpen && s.attended != null ? `<strong>${fmtNum(s.paidAttended ?? s.attended)}</strong> (${fmtPct(s.paidAttended ?? s.attended, s.cohort || s.registered)})${s.unmatchedAttended ? `<div class="sub-cell">+${fmtNum(s.unmatchedAttended)} unmatched</div>` : ""}` : "—"}</td>
                       <td class="num">${canOpen && s.avgMinutes != null ? s.avgMinutes + "m" : "—"}</td>
                       <td class="num">${canOpen ? fmtNum(s.peakConcurrent) : "—"}</td>
                       <td class="num">${canOpen && s.pctLate != null ? s.pctLate + "%" : "—"}</td>
@@ -3234,11 +3265,11 @@
         <section class="kpi-grid">
           <div class="kpi-card">
             <div class="kpi-label">Attended (${esc(rules.attendedMinMinutes)}+ min)</div>
-            <div class="kpi-value-row"><span class="kpi-primary tabular">${fmtPct(s.attended, s.registered)}</span><span class="kpi-counts">${fmtNum(s.attended)} of ${fmtNum(s.registered)} registered</span></div>
+            <div class="kpi-value-row"><span class="kpi-primary tabular">${fmtPct(s.paidAttended ?? s.attended, s.cohort || s.registered)}</span><span class="kpi-counts">${fmtNum(s.paidAttended ?? s.attended)} of ${fmtNum(s.cohort || s.registered)} paid learners${s.unmatchedAttended ? ` · +${fmtNum(s.unmatchedAttended)} unmatched` : ""}</span></div>
           </div>
           <div class="kpi-card">
             <div class="kpi-label">Joined Zoom</div>
-            <div class="kpi-value-row"><span class="kpi-primary tabular">${fmtPct(s.joined, s.registered)}</span><span class="kpi-counts">${fmtNum(s.joined)} of ${fmtNum(s.registered)} registered</span></div>
+            <div class="kpi-value-row"><span class="kpi-primary tabular">${fmtNum(s.joined)}</span><span class="kpi-counts">people · ${fmtNum(s.registered)} registered on Zoom</span></div>
           </div>
           <div class="kpi-card">
             <div class="kpi-label">Avg Minutes · Peak</div>
@@ -3739,8 +3770,12 @@
       const diamondAll = pick(lists.diamondShowcase);
       const tabs = [
         {
-          id: "missed_twice", label: "Missed twice", rows: pick(lists.missedTwice),
-          ruleText: `Learners who attended before, then missed ${rules.missedTwiceCount}+ ${typesText(rules.missedTwiceSessionTypes)} sessions in a row (<${rules.attendedMinMinutes} min).`
+          id: "missed_twice", label: `Call list · missed ${rules.missedTwiceCount} Sundays`, rows: pick(lists.missedTwice),
+          ruleText: `Attended before, then missed the last ${rules.missedTwiceCount}–${Number(rules.missedTwiceCount) + 1} ${typesText(rules.missedTwiceSessionTypes)} sessions in a row (under ${rules.attendedMinMinutes} min). Only synced sessions count — a session with no Zoom report is never a miss. Excludes refunded, do-not-contact and late joiners. "Came to practice" = attended a Tue/Thu since their last Sunday.`
+        },
+        {
+          id: "dropped_off", label: "Dropped off (4+ missed)", rows: pick(lists.droppedOff),
+          ruleText: `Attended before, but missed ${Number(rules.missedTwiceCount) + 2}+ ${typesText(rules.missedTwiceSessionTypes)} sessions in a row — not on the call list. Review separately.`
         },
         {
           id: "diamond", label: "Diamond Showcase", rows: diamondAll.slice(0, Math.max(1, state.diamondInviteLimit)), totalBeforeLimit: diamondAll.length,
@@ -3872,23 +3907,29 @@
                   <th class="num">Regularity</th>
                   <th class="num">Total Min</th>
                   <th>Last Attended</th>
+                  <th>Last call</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
                 ${shown.map(l => {
                   const b = activeTab.crossBatch ? batchById(boot, l.batchId) : null;
+                  const call = (res.data.calls || {})[l.id];
+                  const admin = isAdmin();
                   return `
-                    <tr class="clickable-row" onclick="navigate('#/learner/${Number(l.id)}')">
-                      <td class="name-cell">${esc(l.name)}</td>
-                      <td class="tabular">${esc(l.phone || "—")}</td>
-                      <td style="font-size:12.5px;color:var(--text-muted);">${esc(l.email || "—")}</td>
+                    <tr class="${admin ? "clickable-row" : ""}" ${admin ? `onclick="navigate('#/learner/${Number(l.id)}')"` : ""}>
+                      <td class="name-cell" title="${esc(l.name)}">${esc(l.name)}${l.practiceSinceLastSunday && activeTab.id === "missed_twice" ? `<span class="tag-soft" title="Attended a Tue/Thu practice after their last Sunday">came to practice</span>` : ""}</td>
+                      <td class="tabular" style="white-space:nowrap;">${esc(l.phone || "—")}</td>
+                      <td class="email-cell">${esc(l.email || "—")}</td>
                       <td>${esc(l.country || "—")}</td>
                       ${activeTab.crossBatch ? `<td>${esc(b ? b.shortName : "—")}</td>` : ""}
                       <td>${esc(l.phase)}</td>
                       <td>${statusBadge(l.status)}</td>
                       <td class="num"><strong>${fmtNum(l.regularityScore)}</strong></td>
                       <td class="num">${fmtNum(l.totalMinutes)}m</td>
-                      <td style="font-size:12px;color:var(--text-muted);">${esc(l.lastAttended)}</td>
+                      <td style="font-size:12px;color:var(--text-muted);white-space:nowrap;">${esc(l.lastAttended)}</td>
+                      <td class="call-cell">${call ? `${esc(call.outcome)}<div class="sub-cell">${esc(fmtDate(String(call.calledAt).slice(0, 10)))} · ${esc(call.callerName || "")}${call.callCount > 1 ? ` · ${fmtNum(call.callCount)} calls` : ""}${call.followUp ? ` · follow up ${esc(fmtDate(call.followUp))}` : ""}</div>` : `<span style="color:var(--text-muted);">Not called</span>`}</td>
+                      <td><button class="btn btn-sm" onclick="event.stopPropagation(); openCallDialog(${Number(l.id)}, ${Number(l.batchId) || "null"}, '${esc(l.phase)}')">Log call</button></td>
                     </tr>
                   `;
                 }).join("")}
@@ -4438,7 +4479,7 @@
           <div class="card-header">
             <div>
               <h3 class="card-title">Team &amp; Role Permissions</h3>
-              <p class="card-subtitle">Admin = everything · Team member = Learners, profiles &amp; Lists · Viewer = Overview only</p>
+              <p class="card-subtitle">Admin = everything · Team member = call lists only (can log calls) · Viewer = Overview only</p>
             </div>
           </div>
           <div class="table-wrap">
@@ -4971,6 +5012,74 @@
         if (getRoute().screen === "settings") render(); else navigate("#/settings");
       },
       openListTab(id) { state.listsTab = id; state.listsSearch = ""; state.listsLimit = LIST_PAGE; navigate("#/lists"); },
+
+      // ----- Call logging -----
+      async openCallDialog(learnerId, batchId, phase) {
+        const rows = (window.__currentListData && window.__currentListData.rows) || [];
+        const l = rows.find(r => Number(r.id) === Number(learnerId)) || {};
+        if (!window.__callOptions) {
+          try { window.__callOptions = await apiFetch("GET", "/api/calls/options"); }
+          catch (e) { showToast(e.message || "Couldn't load call options", "error"); return; }
+        }
+        const o = window.__callOptions;
+        let d = document.getElementById("call-dialog");
+        if (!d) { d = document.createElement("dialog"); d.id = "call-dialog"; d.className = "call-dialog"; document.body.appendChild(d); }
+        const me = (state.user && (state.user.name || state.user.email)) || "you";
+        d.innerHTML = `
+          <form class="call-form" method="dialog" onsubmit="event.preventDefault(); saveCall(${Number(learnerId)}, ${batchId == null ? "null" : Number(batchId)}, '${esc(phase || "")}')">
+            <div>
+              <h2>Log a call</h2>
+              <div style="font-size:13px;color:var(--text-muted);margin-top:4px;">${esc(l.name || "Learner")} · ${esc(l.phone || "no phone")} · caller: ${esc(me)}</div>
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="call-outcome">Outcome</label>
+              <select id="call-outcome" class="select-control" required>
+                <option value="">Choose…</option>${o.outcomes.map(x => `<option>${esc(x)}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="call-reason">Reason they gave (optional)</label>
+              <select id="call-reason" class="select-control"><option value="">—</option>${o.reasons.map(x => `<option>${esc(x)}</option>`).join("")}</select>
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="call-follow">Next follow-up (optional)</label>
+              <input id="call-follow" type="date" class="input-control" />
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="call-note">Note (optional)</label>
+              <textarea id="call-note" class="input-control" maxlength="1000" placeholder="What they said"></textarea>
+            </div>
+            <div style="font-size:12px;color:var(--text-muted);">Logging a call never changes attendance. "Asked not to be called" adds them to Do-not-contact.</div>
+            <div class="form-msg is-error" id="call-error" role="alert"></div>
+            <div class="call-form-actions">
+              <button type="button" class="btn" onclick="document.getElementById('call-dialog').close()">Cancel</button>
+              <button type="submit" class="btn btn-primary" id="call-save">Save call</button>
+            </div>
+          </form>`;
+        d.showModal();
+        document.getElementById("call-outcome").focus();
+      },
+      async saveCall(learnerId, batchId, phase) {
+        const outcome = document.getElementById("call-outcome").value;
+        const err = document.getElementById("call-error");
+        if (!outcome) { err.textContent = "Pick an outcome."; return; }
+        const btn = document.getElementById("call-save");
+        btn.disabled = true;
+        try {
+          await apiFetch("POST", "/api/calls", {
+            learnerId, batchId, phase, outcome,
+            reason: document.getElementById("call-reason").value || null,
+            followUp: document.getElementById("call-follow").value || null,
+            note: document.getElementById("call-note").value || ""
+          });
+          document.getElementById("call-dialog").close();
+          showToast("Call logged");
+          invalidate("lists");
+        } catch (e) {
+          err.textContent = e.message || "Couldn't save the call.";
+          btn.disabled = false;
+        }
+      },
 
       // ----- Auth -----
       toggleLoginPassword(btn) {

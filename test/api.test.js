@@ -103,7 +103,8 @@ test("full flow: import learners, create batch + meetings, Zoom data, analytics,
   const ov = await call("GET", `/api/batches/${batchId}/overview`);
   assert.equal(ov.status, 200);
   const p1 = ov.json.batch.phaseSummary.All.p1;
-  assert.equal(p1.w1Attended, 3);
+  assert.equal(p1.w1Attended, 2); // paid learners only
+  assert.equal(p1.weeklySundayUnmatched[0], 1); // Ravi, reported separately
   assert.equal(p1.registered, 2);
   assert.equal(p1.paid, 2);
   assert.equal(ov.json.batch.phaseSummary.India.p1.w1Attended, 2); // Ravi has no region
@@ -141,6 +142,20 @@ test("full flow: import learners, create batch + meetings, Zoom data, analytics,
   const lists = await call("GET", `/api/batches/${batchId}/lists`);
   assert.equal(lists.json.dncExcludedCount, 1);
   assert.deepEqual(lists.json.doNotContact.map(r => r.name), ["Bala Iyer"]);
+
+  // Call logging: validated, shown on the call list, never touches attendance; "asked not to be called" → DNC
+  const ashaId = search.json.results[0].id;
+  assert.equal((await call("POST", "/api/calls", { learnerId: ashaId, outcome: "Made up" })).status, 400);
+  assert.equal((await call("POST", "/api/calls", { learnerId: ashaId, batchId, phase: "Phase 1", outcome: "No answer", followUp: "2026-12-09" })).status, 200);
+  const withCall = await call("GET", `/api/batches/${batchId}/lists`);
+  assert.equal(withCall.json.calls[ashaId].outcome, "No answer");
+  assert.equal(withCall.json.calls[ashaId].followUp, "2026-12-09");
+  const before = (await call("GET", `/api/batches/${batchId}/overview`)).json.batch.phaseSummary.All.p1.w1Attended;
+  assert.equal((await call("POST", "/api/calls", { learnerId: ashaId, batchId, outcome: "Asked not to be called" })).status, 200);
+  assert.equal((await call("GET", `/api/learners/${ashaId}/calls`)).json.calls.length, 2);
+  const after = await call("GET", `/api/batches/${batchId}/lists`);
+  assert.ok(after.json.doNotContact.some(r => r.name === "Asha Rao"));
+  assert.equal((await call("GET", `/api/batches/${batchId}/overview`)).json.batch.phaseSummary.All.p1.w1Attended, before);
 
   // Rules
   const rules = await call("PUT", "/api/settings/rules", { rules: { attendedMinMinutes: 80 } });

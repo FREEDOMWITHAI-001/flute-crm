@@ -198,7 +198,23 @@ const MIGRATIONS = [
    ALTER TABLE sync_runs ENABLE ROW LEVEL SECURITY;
    ALTER TABLE schema_version ENABLE ROW LEVEL SECURITY;`,
   // Which Zoom user hosts the link (connect@ or hd@), so the UI can say where a session ran
-  `ALTER TABLE batch_meetings ADD COLUMN IF NOT EXISTS host_email TEXT`
+  `ALTER TABLE batch_meetings ADD COLUMN IF NOT EXISTS host_email TEXT`,
+  // A human call to a learner and what came of it. Never changes attendance.
+  `CREATE TABLE IF NOT EXISTS call_logs (
+     id SERIAL PRIMARY KEY,
+     learner_id INTEGER NOT NULL REFERENCES learners(id) ON DELETE CASCADE,
+     batch_id INTEGER REFERENCES batches(id) ON DELETE SET NULL,
+     phase TEXT,
+     caller_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+     caller_name TEXT,
+     called_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+     outcome TEXT NOT NULL,
+     reason TEXT,
+     follow_up DATE,
+     note TEXT
+   );
+   CREATE INDEX IF NOT EXISTS call_logs_learner ON call_logs(learner_id, called_at DESC);
+   ALTER TABLE call_logs ENABLE ROW LEVEL SECURITY`
 ];
 
 async function migrate() {
