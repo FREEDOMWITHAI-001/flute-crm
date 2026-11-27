@@ -187,24 +187,26 @@ async function upsertLearnerBatch(list) {
  * full: every subscriber (≈350 pages). Otherwise only people who subscribed in the last `sinceDays`.
  */
 export async function syncSubscribers({ full = false, sinceDays = 3, apiKey = process.env.TAGMANGO_API_KEY, host = process.env.TAGMANGO_HOST,
-  fetchImpl = fetch, now = new Date(), maxPages = 2000 } = {}) {
+  fetchImpl = fetch, now = new Date(), maxPages = 2000, startPage = 1, deadline = Infinity } = {}) {
   if (!apiKey || !host) return { skipped: true, reason: "TAGMANGO_API_KEY or TAGMANGO_HOST not set" };
   const body = { status: "all", limit: PAGE_SIZE };
   if (!full) {
     body.subscribedAfter = new Date(now.getTime() - sinceDays * 86_400_000).toISOString();
     body.subscribedBefore = now.toISOString();
   }
-  let page = 1, fetched = 0, saved = 0, total = null;
+  // Stops early at `deadline` (serverless time limit) and reports nextPage so the next run can resume.
+  let page = startPage, fetched = 0, saved = 0, total = null;
   for (; page <= maxPages; page++) {
+    if (page > startPage && Date.now() > deadline) return { full, fetched, saved, total, pages: page - startPage, done: false, nextPage: page };
     const result = await tmPost("/subscribers", { ...body, page }, { apiKey, host, fetchImpl });
     const data = result.data || [];
-    if (page === 1 && typeof result.total === "number") total = result.total;
+    if (typeof result.total === "number") total = result.total;
     if (!data.length) break;
     fetched += data.length;
     saved += await upsertLearnerBatch(data.map(subscriberToLearner));
     if (data.length < PAGE_SIZE) break;
   }
-  return { full, fetched, saved, total, pages: page };
+  return { full, fetched, saved, total, pages: page - startPage + 1, done: true };
 }
 
 // ---------- Optional pull (only if Ganesh's TagMango access exposes a list endpoint) ----------

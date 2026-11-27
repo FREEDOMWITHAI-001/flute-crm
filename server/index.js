@@ -26,8 +26,28 @@ export function webhookUrl() {
 
 // ---------- Sync orchestration ----------
 let syncing = false;
+// Lease in the DB so two serverless instances (cron + "Sync now") never sync at once.
+const LOCK_MINUTES = 6;
+async function acquireSyncLock() {
+  const row = await q1(
+    `INSERT INTO settings (key, value) VALUES ('sync_lock', $1)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+       WHERE (settings.value->>'until')::timestamptz < now()
+     RETURNING key`,
+    [JSON.stringify({ until: new Date(Date.now() + LOCK_MINUTES * 60_000).toISOString() })]);
+  return !!row;
+}
+const releaseSyncLock = () => q(`DELETE FROM settings WHERE key = 'sync_lock'`);
+
+const saveSetting = (key, value) =>
+  q(`INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [key, JSON.stringify(value)]);
+
+/**
+ * opts.scheduled  — from cron: also runs (or continues) the daily full TagMango refresh
+ * opts.deadline   — epoch ms; the full refresh pauses there and resumes on the next scheduled run
+ */
 export async function runSync(source = "all", opts = {}) {
-  if (syncing) return { skipped: true, reason: "A sync is already running" };
+  if (syncing || !(await acquireSyncLock())) return { skipped: true, reason: "A sync is already running" };
   syncing = true;
   const results = {};
   try {
@@ -35,20 +55,34 @@ export async function runSync(source = "all", opts = {}) {
       results.zoom = await syncZoom({ accounts: loadZoomAccounts() });
     }
     if ((source === "all" || source === "tagmango") && process.env.TAGMANGO_API_KEY && process.env.TAGMANGO_HOST) {
-      // Full refresh (~13 min, catches refunds/revocations) at most once a day and only from the scheduled sync,
-      // so "Sync now" stays quick; otherwise only recent subscribers
+      // Every sync pulls recent subscribers (seconds). The full refresh (~13 min, catches refunds/revocations)
+      // runs once a day from the scheduled sync only, in deadline-sized chunks that resume via a saved cursor.
       const last = await q1(`SELECT value FROM settings WHERE key = 'tagmango_last_full'`);
+      const cursor = (await q1(`SELECT value FROM settings WHERE key = 'tagmango_full_cursor'`))?.value;
       const due = !last || Date.now() - new Date(last.value.at).getTime() > 20 * 3600_000;
-      const full = opts.fullTagMango || (opts.scheduled && due);
+      const full = opts.fullTagMango || (opts.scheduled && (due || !!cursor));
       const run = await q1(`INSERT INTO sync_runs (source) VALUES ('TagMango') RETURNING id`);
       try {
-        const r = await syncSubscribers({ full });
+        const recent = await syncSubscribers({ full: false });
+        let note = `Recent subscribers: ${recent.fetched.toLocaleString("en-US")} rows · ${recent.saved.toLocaleString("en-US")} learners saved`;
+        let saved = recent.saved;
+        const r = { recent };
         if (full) {
-          await q(`INSERT INTO settings (key, value) VALUES ('tagmango_last_full', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-            [JSON.stringify({ at: new Date().toISOString(), saved: r.saved })]);
+          const startPage = cursor?.page || 1;
+          const f = await syncSubscribers({ full: true, startPage, deadline: opts.deadline ?? Infinity });
+          r.full = f;
+          saved += f.saved;
+          const soFar = (startPage > 1 ? cursor.saved || 0 : 0) + f.saved;
+          if (f.done) {
+            await saveSetting("tagmango_last_full", { at: new Date().toISOString(), saved: soFar });
+            await q(`DELETE FROM settings WHERE key = 'tagmango_full_cursor'`);
+            note += ` · Full refresh finished (${soFar.toLocaleString("en-US")} learners)`;
+          } else {
+            await saveSetting("tagmango_full_cursor", { page: f.nextPage, saved: soFar, startedAt: cursor?.startedAt || new Date().toISOString() });
+            note += ` · Full refresh in progress: page ${f.nextPage - 1}${f.total ? ` of ${Math.ceil(f.total / 100)}` : ""}, continues next sync`;
+          }
         }
-        await q(`UPDATE sync_runs SET finished_at = now(), status = 'Synced', records = $2, note = $3 WHERE id = $1`,
-          [run.id, r.saved, `${full ? "Full refresh" : "Recent subscribers"}: ${r.fetched.toLocaleString("en-US")} rows · ${r.saved.toLocaleString("en-US")} learners saved`]);
+        await q(`UPDATE sync_runs SET finished_at = now(), status = 'Synced', records = $2, note = $3 WHERE id = $1`, [run.id, saved, note]);
         results.tagmango = r;
       } catch (e) {
         await q(`UPDATE sync_runs SET finished_at = now(), status = 'Sync failed', error = $2 WHERE id = $1`, [run.id, e.message]);
@@ -63,6 +97,7 @@ export async function runSync(source = "all", opts = {}) {
     return results;
   } finally {
     syncing = false;
+    await releaseSyncLock().catch(() => {});
     store.invalidate();
   }
 }
@@ -71,6 +106,17 @@ export function createApp() {
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "25mb" }));
+
+  // Scheduled sync (Vercel Cron / Supabase pg_cron). Vercel functions stop at 300 s, so the
+  // TagMango full refresh gets a deadline and resumes on the next call.
+  app.all("/api/cron/sync", h(async (req, res) => {
+    const secret = process.env.CRON_SECRET;
+    const given = String(req.headers.authorization || "").replace(/^Bearer /, "");
+    if (!secret || given.length !== secret.length || !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(secret))) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+    res.json({ results: await runSync("all", { scheduled: true, deadline: Date.now() + 200_000 }) });
+  }));
 
   // Public: TagMango webhook (secret in the URL because TagMango doesn't sign requests)
   app.post("/api/webhooks/tagmango", h(async (req, res) => {
