@@ -3,9 +3,24 @@
   "framework": null,
   "buildCommand": "",
   "outputDirectory": "public",
+  "regions": [
+    "hnd1"
+  ],
   "functions": {
-    "api/index.js": { "maxDuration": 300 }
+    "api/index.js": {
+      "maxDuration": 300
+    }
   },
-  "rewrites": [{ "source": "/api/(.*)", "destination": "/api/index" }],
-  "crons": [{ "path": "/api/cron/sync", "schedule": "30 20 * * *" }]
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/sync",
+      "schedule": "30 20 * * *"
+    }
+  ]
 }

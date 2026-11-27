@@ -188,8 +188,11 @@
       top: 0;
       height: 100vh;
       z-index: 30;
+      overscroll-behavior: contain;
       transition: width var(--transition-fast);
     }
+    .pager { display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap; padding: 4px 0; }
+    .pager-info { font-size: 12.5px; color: var(--text-muted); min-width: 170px; text-align: center; }
     .sidebar.collapsed {
       width: var(--sidebar-collapsed-width);
     }
@@ -283,6 +286,7 @@
     .sidebar-scroll {
       flex: 1;
       overflow-y: auto;
+      overscroll-behavior: contain;
       padding: var(--sp-4) var(--sp-3);
       display: flex;
       flex-direction: column;
@@ -1719,8 +1723,25 @@
     ];
     // Phase 2 runs weeks 8–14. The overview payload sends weekOffset; this is only a fallback.
     const P2_WEEK_OFFSET_FALLBACK = 7;
-    const LEARNER_PAGE = 300;
-    const LIST_PAGE = 300;
+    const LEARNER_PAGE = 50;
+    const LIST_PAGE = 50;
+    const REVIEW_PAGE = 10;
+
+    // Page n of rows, where limit = n * size (state keeps the end index so filter resets still work)
+    function pageOf(rows, limit, size) {
+      const pages = Math.max(1, Math.ceil(rows.length / size));
+      const page = Math.min(pages, Math.max(1, Math.round(limit / size)));
+      return { page, pages, start: (page - 1) * size, rows: rows.slice((page - 1) * size, page * size) };
+    }
+    function pagerHtml(total, pg, size, fn) {
+      if (pg.pages <= 1) return "";
+      const a = pg.start + 1, b = Math.min(total, pg.start + size);
+      return `<div class="pager">
+        <button class="btn btn-sm" ${pg.page <= 1 ? "disabled" : ""} onclick="${fn}(${pg.page - 1})">‹ Prev</button>
+        <span class="pager-info tabular">${fmtNum(a)}–${fmtNum(b)} of ${fmtNum(total)} · page ${fmtNum(pg.page)} of ${fmtNum(pg.pages)}</span>
+        <button class="btn btn-sm" ${pg.page >= pg.pages ? "disabled" : ""} onclick="${fn}(${pg.page + 1})">Next ›</button>
+      </div>`;
+    }
     const PARTICIPANT_CAP = 200;
     const ALL_DATA_KEYS = ["bootstrap", "overview", "sessions", "session", "learners", "learner", "lists", "review", "sync", "settings"];
 
@@ -1804,6 +1825,7 @@
       // Review
       reviewSearch: {},          // identityKey -> { q, results, loading, error, seq, timer }
       reviewBusy: new Set(),     // identityKeys with a resolve in flight
+      reviewLimit: REVIEW_PAGE,
       // Sync
       syncRunning: { zoom: false, tagmango: false },
       importBusy: false,
@@ -2070,6 +2092,7 @@
         Synced: ["Synced", "badge-green"],
         Upcoming: ["Upcoming", "badge-slate"],
         "Awaiting data": ["Awaiting data", "badge-amber"],
+        "Not in Zoom": ["Before tracking", "badge-slate"],
         "Sync failed": ["Sync failed", "badge-red"],
         "Not connected": ["Not connected", "badge-slate"],
         "Never synced": ["Never synced", "badge-slate"],
@@ -2451,6 +2474,8 @@
         denominator: sum("denominator"),
         lateJoiners: sum("lateJoiners"),
         w1: sum("w1Attended"),
+        w1Synced: parts.every(p => p.w1Synced !== false),
+        firstSyncedWeek: Math.min(...parts.map(p => p.firstSyncedWeek || 99)),
         weekly,
         newRet,
         currentWeek,
@@ -2522,7 +2547,8 @@
       const wl = w => phaseWeekLabel(w, agg.offset2);
       const den = agg.denominator;
       const denWord = agg.registered > 0 ? "registered" : "paid";
-      const retentionPct = agg.w1 && agg.current != null ? Math.round((agg.current / agg.w1) * 100) : null;
+      const noW1 = !agg.w1Synced; // week 1 isn't in Zoom (ran before tracking started), so W1-based numbers can't be computed
+      const retentionPct = !noW1 && agg.w1 && agg.current != null ? Math.round((agg.current / agg.w1) * 100) : null;
       const goal = meta.goalRetentionPct;
       const baseline = meta.baselineRetentionPct;
       const retentionBadgeCls = retentionPct == null ? "badge-slate"
@@ -2543,10 +2569,10 @@
           <div class="kpi-card">
             <div class="kpi-label"><span>Week-1 attendance</span></div>
             <div class="kpi-value-row">
-              <span class="kpi-primary tabular">${fmtPct(agg.w1, den)}</span>
-              <span class="kpi-counts">${fmtNum(agg.w1)} of ${fmtNum(den)} ${denWord}</span>
+              <span class="kpi-primary tabular">${noW1 ? "—" : fmtPct(agg.w1, den)}</span>
+              <span class="kpi-counts">${noW1 ? "Not in Zoom yet" : `${fmtNum(agg.w1)} of ${fmtNum(den)} ${denWord}`}</span>
             </div>
-            <div class="kpi-foot">Sunday Learning (≥${esc(rules.attendedMinMinutes)} min)</div>
+            <div class="kpi-foot">${noW1 ? `Zoom data starts at week ${esc(agg.firstSyncedWeek)} · weeks before need backfill` : `Sunday Learning (≥${esc(rules.attendedMinMinutes)} min)`}</div>
           </div>
 
           <div class="kpi-card">
@@ -2562,7 +2588,7 @@
             <div class="kpi-label"><span>${agg.currentWeek ? `${esc(wl(1))} → ${esc(wl(agg.currentWeek))} retention` : "Retention"}</span>${goal != null ? `<span class="badge ${retentionBadgeCls}">Goal ${esc(goal)}%</span>` : ""}</div>
             <div class="kpi-value-row">
               <span class="kpi-primary tabular">${retentionPct == null ? "—" : retentionPct + "%"}</span>
-              <span class="kpi-counts">${fmtNum(agg.current)} of ${fmtNum(agg.w1)} week-1 attendees</span>
+              <span class="kpi-counts">${noW1 ? "Needs week-1 data" : `${fmtNum(agg.current)} of ${fmtNum(agg.w1)} week-1 attendees`}</span>
             </div>
             <div class="kpi-foot">${baseline != null && goal != null ? `Target: lift ${esc(baseline)}% baseline → ${esc(goal)}%` : "&nbsp;"}</div>
           </div>
@@ -2579,10 +2605,10 @@
           <div class="kpi-card ${canLists ? "clickable" : ""}" ${canLists ? `onclick="openListTab('late_joiners')" title="View late joiners list"` : ""}>
             <div class="kpi-label"><span>Late joiners</span></div>
             <div class="kpi-value-row">
-              <span class="kpi-primary tabular">${fmtPct(agg.lateJoiners, den)}</span>
-              <span class="kpi-counts">${fmtNum(agg.lateJoiners)} of ${fmtNum(den)} ${denWord}</span>
+              <span class="kpi-primary tabular">${noW1 ? "—" : fmtPct(agg.lateJoiners, den)}</span>
+              <span class="kpi-counts">${noW1 ? "Needs week-1 data" : `${fmtNum(agg.lateJoiners)} of ${fmtNum(den)} ${denWord}`}</span>
             </div>
-            <div class="kpi-foot">First attended week 2+ · restart next batch</div>
+            <div class="kpi-foot">${noW1 ? "Can't tell who started late without week 1" : "First attended week 2+ · restart next batch"}</div>
           </div>
 
           ${isAdmin() ? `
@@ -2602,7 +2628,8 @@
         const phaseCard = (p, badgeCls, badgeText) => {
           const weekly = p.weeklySundayAttended || [];
           const cw = p.currentWeek || 0;
-          const ret = p.w1Attended && cw ? Math.round(((weekly[cw - 1] ?? p.currentWeekAttended) / p.w1Attended) * 100) : null;
+          const pNoW1 = p.w1Synced === false;
+          const ret = !pNoW1 && p.w1Attended && cw ? Math.round(((weekly[cw - 1] ?? p.currentWeekAttended) / p.w1Attended) * 100) : null;
           const off = p.weekOffset || 0;
           return `
             <div class="card">
@@ -2621,13 +2648,13 @@
                 </div>
                 <div>
                   <span class="stat-mini-label">${cw ? `W${1 + off} → W${cw + off} Sunday` : "Sunday attendance"}</span>
-                  <div class="stat-mini-val tabular" style="font-size:18px;">${cw ? `${fmtNum(p.w1Attended)} → ${fmtNum(p.currentWeekAttended)}` : "—"}</div>
-                  <span class="stat-mini-label">${ret == null ? "No sessions synced yet" : `${ret}% retained`}</span>
+                  <div class="stat-mini-val tabular" style="font-size:18px;">${cw ? `${pNoW1 ? "—" : fmtNum(p.w1Attended)} → ${fmtNum(p.currentWeekAttended)}` : "—"}</div>
+                  <span class="stat-mini-label">${!cw ? "No sessions synced yet" : pNoW1 ? `Week ${1 + off} not in Zoom yet` : `${ret}% retained`}</span>
                 </div>
                 <div>
                   <span class="stat-mini-label">Avg stay · Late</span>
                   <div class="stat-mini-val tabular" style="font-size:18px;">${cw ? `${fmtNum(p.avgMinutes)}m` : "—"}</div>
-                  <span class="stat-mini-label">${fmtNum(p.lateJoiners)} late joiners</span>
+                  <span class="stat-mini-label">${pNoW1 ? "Late joiners need week 1" : `${fmtNum(p.lateJoiners)} late joiners`}</span>
                 </div>
               </div>
             </div>
@@ -2894,6 +2921,9 @@
       }
       if (s.status === "Sync failed") {
         return `<div style="font-size:12px;color:var(--red);padding-top:6px;border-top:1px solid var(--border-subtle);">Sync failed${s.syncError ? `: ${esc(s.syncError)}` : ""} · <a href="#/sync">Retry sync</a></div>`;
+      }
+      if (s.status === "Not in Zoom") {
+        return `<div style="font-size:12px;color:var(--text-muted);padding-top:6px;border-top:1px solid var(--border-subtle);">Ran before Zoom tracking started · will fill in when the old dashboard data is imported</div>`;
       }
       if (s.status === "Awaiting data") {
         return `<div style="font-size:12px;color:var(--amber);padding-top:6px;border-top:1px solid var(--border-subtle);">Session date has passed — Zoom report not pulled yet · <a href="#/sync">Sync now</a></div>`;
@@ -3261,7 +3291,8 @@
       const filtered = filteredLearners(all);
       window.__learnersFiltered = filtered;
       const selectedRows = filtered.filter(l => f.selected.has(l.rowKey));
-      const shown = filtered.slice(0, state.learnersLimit);
+      const learnersPg = pageOf(filtered, state.learnersLimit, LEARNER_PAGE);
+      const shown = learnersPg.rows;
       const sortAttr = k => (f.sortKey === k ? `aria-sort="${f.sortDir === "asc" ? "ascending" : "descending"}"` : "");
       const stripHead = state.phase === "Phase 1" ? "W1–W7" : state.phase === "Phase 2" ? "W8–W14" : "Weeks (P1 W1–7 · P2 W8–14)";
 
@@ -3383,13 +3414,7 @@
         </div>
       `;
 
-      if (filtered.length > shown.length) {
-        html += `
-          <div style="display:flex;justify-content:center;align-items:center;gap:12px;flex-wrap:wrap;">
-            <span style="font-size:12.5px;color:var(--text-muted);">Showing ${fmtNum(shown.length)} of ${fmtNum(filtered.length)}</span>
-            <button class="btn" onclick="showMoreLearners()">Show ${fmtNum(Math.min(LEARNER_PAGE, filtered.length - shown.length))} more</button>
-          </div>`;
-      }
+      html += pagerHtml(filtered.length, learnersPg, LEARNER_PAGE, "gotoLearnersPage");
 
       el.innerHTML = html;
     }
@@ -3630,7 +3655,8 @@
         const phone = String(r.phone || "").toLowerCase();
         return name.includes(q) || email.includes(q) || phone.includes(q);
       });
-      const shown = visibleRows.slice(0, state.listsLimit);
+      const listsPg = pageOf(visibleRows, state.listsLimit, LIST_PAGE);
+      const shown = listsPg.rows;
       window.__currentListData = { tab: activeTab, rows: visibleRows };
       const filterNote = (state.phase !== "All" || state.region !== "All") ? ` · Filtered to ${[state.phase !== "All" ? state.phase : "", state.region !== "All" ? state.region : ""].filter(Boolean).join(" · ")}` : "";
 
@@ -3754,13 +3780,7 @@
         `;
       }
 
-      if (visibleRows.length > shown.length) {
-        html += `
-          <div style="display:flex;justify-content:center;align-items:center;gap:12px;flex-wrap:wrap;">
-            <span style="font-size:12.5px;color:var(--text-muted);">Showing ${fmtNum(shown.length)} of ${fmtNum(visibleRows.length)} — Export CSV includes all</span>
-            <button class="btn" onclick="showMoreListRows()">Show more</button>
-          </div>`;
-      }
+      html += pagerHtml(visibleRows.length, listsPg, LIST_PAGE, "gotoListsPage");
 
       el.innerHTML = html;
     }
@@ -3810,7 +3830,7 @@
         <div class="alert-banner info">
           <div class="alert-banner-left">
             ${iconSvg("inbox", 18)}
-            <span><strong>Manual matching only — uncertain names are never auto-guessed.</strong> Once you confirm a match, that Zoom name/email is remembered for all future syncs.</span>
+            <span><strong>Only people we couldn't match automatically</strong> (by email, a typo-fixed email, phone, or a full name only one learner has). Confirm once and it's remembered for every future sync.</span>
           </div>
           <span class="badge badge-amber">${fmtNum(queue.length)} awaiting review</span>
         </div>
@@ -3828,8 +3848,11 @@
         return;
       }
 
+      const reviewPg = pageOf(queue, state.reviewLimit, REVIEW_PAGE);
+      html += pagerHtml(queue.length, reviewPg, REVIEW_PAGE, "gotoReviewPage");
       html += `<div class="review-grid">`;
-      queue.forEach((item, idx) => {
+      reviewPg.rows.forEach((item, i) => {
+        const idx = reviewPg.start + i;
         const st = state.reviewSearch[item.id];
         const busy = state.reviewBusy.has(item.id);
         const suggestions = item.suggestions || [];
@@ -3889,6 +3912,7 @@
         `;
       });
       html += `</div>`;
+      html += pagerHtml(queue.length, reviewPg, REVIEW_PAGE, "gotoReviewPage");
 
       el.innerHTML = html;
     }
@@ -4941,6 +4965,9 @@
         render();
       },
       showMoreLearners() { state.learnersLimit += LEARNER_PAGE; render(); },
+      gotoLearnersPage(n) { state.learnersLimit = n * LEARNER_PAGE; render(); window.scrollTo({ top: 0 }); },
+      gotoListsPage(n) { state.listsLimit = n * LIST_PAGE; render(); window.scrollTo({ top: 0 }); },
+      gotoReviewPage(n) { state.reviewLimit = n * REVIEW_PAGE; render(); window.scrollTo({ top: 0 }); },
       copySelectedLearnerNumbers() {
         const list = window.__learnersFiltered || [];
         const sel = list.filter(l => state.learnersFilter.selected.has(l.rowKey));

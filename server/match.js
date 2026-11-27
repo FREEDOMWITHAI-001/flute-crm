@@ -1,6 +1,6 @@
 // Identity normalisation and Zoom → learner matching.
-// Order of trust: registrant / Zoom email → phone → a decision someone made by hand.
-// Name-only matches are never automatic; they only produce suggestions for the review queue.
+// Order of trust: a decision someone made by hand → email (typos fixed) → phone → a full name that only one learner has.
+// Partial or shared names are never auto-matched; they only produce suggestions for the review queue.
 
 export function normEmail(email) {
   if (!email) return "";
@@ -51,19 +51,39 @@ export function regionFor({ phone, country } = {}) {
   return null;
 }
 
-/** Index learners for O(1) email / phone lookups. */
+/** Fix common domain typos people make when typing their email into Zoom (gmai.com, gmail.con, hotmsil.com…). */
+export function fixEmailTypos(email) {
+  const e = normEmail(email);
+  if (!e) return "";
+  return e
+    .replace(/@(gmai|gmial|gmsil|gmqil|gmal|gamil|gnail|gmaill|g\.mail)\.(com|con|cpm|om|co|cm)$/, "@gmail.com")
+    .replace(/@gmail\.(con|cpm|om|co|cm|comg)$/, "@gmail.com")
+    .replace(/@(hotmsil|hitmail|hotmial|hotmil|hotmai)\.(com|con)$/, "@hotmail.com")
+    .replace(/@(yahoo|hotmail|outlook|rediffmail|icloud)\.(con|cpm|om|cm)$/, "@$1.com");
+}
+
+/** Full-name key for name matching: needs 2+ real words ("Kumodini Jain", not "K M" or "Preeti"). */
+export function fullNameKey(name) {
+  const t = nameTokens(name);
+  return t.length >= 2 && t.join("").length >= 6 ? t.join(" ") : "";
+}
+
+/** Index learners for O(1) email / phone / unique-full-name lookups. */
 export function buildLearnerIndex(learners) {
   const byEmail = new Map();
   const byPhone = new Map();
   const byId = new Map();
+  const byName = new Map(); // full name → learner, or null when two different learners share it
   for (const l of learners) {
     byId.set(l.id, l);
     const e = normEmail(l.email);
     if (e && !byEmail.has(e)) byEmail.set(e, l);
     const p = phoneKey(l.phone);
     if (p && !byPhone.has(p)) byPhone.set(p, l);
+    const n = fullNameKey(l.name);
+    if (n) byName.set(n, byName.has(n) && byName.get(n)?.id !== l.id ? null : l);
   }
-  return { byEmail, byPhone, byId, all: learners };
+  return { byEmail, byPhone, byName, byId, all: learners };
 }
 
 /**
@@ -85,12 +105,32 @@ export function resolveIdentity({ name, email, phone }, index, links) {
     const l = index.byEmail.get(e);
     return { personKey: `learner:${l.id}`, learnerId: l.id, via: "email", excluded: false, identityKey };
   }
+  const fixed = fixEmailTypos(e);
+  if (fixed && fixed !== e && index.byEmail.has(fixed)) {
+    const l = index.byEmail.get(fixed);
+    return { personKey: `learner:${l.id}`, learnerId: l.id, via: "email", excluded: false, identityKey };
+  }
   const p = phoneKey(phone);
   if (p && index.byPhone.has(p)) {
     const l = index.byPhone.get(p);
     return { personKey: `learner:${l.id}`, learnerId: l.id, via: "phone", excluded: false, identityKey };
   }
+  // Last: the full name belongs to exactly one paid learner (spec: email, then phone, then name)
+  const n = fullNameKey(name);
+  const byName = n && index.byName ? index.byName.get(n) : null;
+  if (byName) return { personKey: `learner:${byName.id}`, learnerId: byName.id, via: "name", excluded: false, identityKey };
   return { personKey: identityKey, learnerId: null, via: "none", excluded: false, identityKey };
+}
+
+// Name tokens / email local parts per learner list, computed once (the list has ~35k rows)
+const preparedCache = new WeakMap();
+function prepared(learners) {
+  let p = preparedCache.get(learners);
+  if (!p) {
+    p = learners.map(l => ({ l, tokens: nameTokens(l.name), emailLocal: normEmail(l.email).split("@")[0] || "" })).filter(x => x.tokens.length);
+    preparedCache.set(learners, p);
+  }
+  return p;
 }
 
 /** Up to `limit` learner suggestions for an unmatched Zoom identity, best first. */
@@ -101,9 +141,7 @@ export function suggestLearners({ name, email }, learners, { limit = 3, minConfi
   if (!zTokens.length && !emailTokens.length) return [];
 
   const out = [];
-  for (const l of learners) {
-    const lTokens = nameTokens(l.name);
-    if (!lTokens.length) continue;
+  for (const { l, tokens: lTokens, emailLocal: lEmailLocal } of prepared(learners)) {
     let score = 0;
     const reasons = [];
 
@@ -120,7 +158,6 @@ export function suggestLearners({ name, email }, learners, { limit = 3, minConfi
       }
     }
 
-    const lEmailLocal = normEmail(l.email).split("@")[0] || "";
     if (emailTokens.length && lEmailLocal) {
       const hits = emailTokens.filter(t => lEmailLocal.includes(t) || lTokens.includes(t));
       if (hits.length) { score += 25 * (hits.length / emailTokens.length); reasons.push("email looks similar"); }

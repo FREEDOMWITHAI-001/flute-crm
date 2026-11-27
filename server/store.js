@@ -159,15 +159,22 @@ export async function lists(batchId) {
   return { ...m.lists, activeOnly: activeLearners(recent, { today: c.today, rules: c.rules }) };
 }
 
-export async function reviewItems(batchId) {
-  const m = await modelFor(batchId);
-  if (!m) return null;
-  const c = await loadCommon();
-  const visible = m.unmatched.filter(u => {
-    const link = c.links.get(u.id);
-    return !(link && link.decision === "skip" && new Date(link.decidedAt).toISOString().slice(0, 10) >= u.lastSeen);
-  });
-  return visible.map((u, i) => ({ ...u, suggestions: i < 200 ? suggestLearners({ name: u.zoomName, email: u.zoomEmail }, c.learners) : [] }));
+export function reviewItems(batchId) {
+  const key = `review:${batchId}`;
+  if (cache.has(key)) return cache.get(key);
+  const promise = (async () => {
+    const m = await modelFor(batchId);
+    if (!m) return null;
+    const c = await loadCommon();
+    const visible = m.unmatched.filter(u => {
+      const link = c.links.get(u.id);
+      return !(link && link.decision === "skip" && new Date(link.decidedAt).toISOString().slice(0, 10) >= u.lastSeen);
+    });
+    return visible.map((u, i) => ({ ...u, suggestions: i < 200 ? suggestLearners({ name: u.zoomName, email: u.zoomEmail }, c.learners) : [] }));
+  })();
+  cache.set(key, promise);
+  promise.catch(() => cache.delete(key));
+  return promise;
 }
 
 export async function unmatchedCount() {

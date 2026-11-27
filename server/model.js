@@ -203,6 +203,11 @@ export function buildBatchModel(input) {
   const personSessions = new Map(); // personKey -> [{sessionId, minutes, ...}]
   const sessionList = [];
   const sessionDetail = new Map();
+  // First date each slot has Zoom data; a past session before it ran before tracking (or on a meeting we can't see)
+  const firstDataBySlot = new Map();
+  for (const s of sessions.values()) {
+    if (s.hasData && (s.rowCount || s.endIso) && (!firstDataBySlot.has(s.slot) || s.date < firstDataBySlot.get(s.slot))) firstDataBySlot.set(s.slot, s.date);
+  }
   for (const s of sessions.values()) {
     // Zoom listed the instance but its participant report hasn't arrived yet
     if (s.hasData && !s.rowCount && !s.endIso) s.hasData = false;
@@ -251,7 +256,8 @@ export function buildBatchModel(input) {
     }
     const status = s.hasData ? "Synced"
       : (s.date > today ? "Upcoming"
-      : (input.syncErrors?.get(s.zoomAccount) ? "Sync failed" : "Awaiting data"));
+      : (input.syncErrors?.get(s.zoomAccount) ? "Sync failed"
+      : (firstDataBySlot.has(s.slot) && s.date < firstDataBySlot.get(s.slot) ? "Not in Zoom" : "Awaiting data")));
 
     const summary = {
       id: s.id, batchId: s.batchId, slot: s.slot, week: s.week, weekLabel: s.phase === "Phase 2" ? s.week + WEEKS : s.week,
@@ -334,7 +340,8 @@ export function buildBatchModel(input) {
 
       let status;
       if (learner.status === "refunded") status = "refunded";
-      else if (phase === "Phase 1" && firstJoinedWeek != null && firstJoinedWeek >= 2) status = nextP1.has(personKey) ? "moved" : "late_joiner";
+      // Only judge "late" when week 1 is actually in Zoom; without it we cannot know when someone started
+      else if (phase === "Phase 1" && weekHeld(1) && firstJoinedWeek != null && firstJoinedWeek >= 2) status = nextP1.has(personKey) ? "moved" : "late_joiner";
       else if (firstAttendedWeek == null) status = held.length ? "inactive" : "active";
       else if (missedStreak >= rules.missedTwiceCount + 2) status = "inactive";
       else if (missedStreak >= rules.missedTwiceCount) status = "at_risk";
@@ -406,6 +413,8 @@ export function buildBatchModel(input) {
         registered,
         denominator,
         w1Attended: weekly[0] ?? 0,
+        w1Synced: weekly[0] != null,
+        firstSyncedWeek: heldIdx.length ? heldIdx[0] + 1 : null,
         currentWeek,
         currentWeekAttended: currentWeek ? weekly[currentWeek - 1] : 0,
         avgMinutes: minutesN ? Math.round(minutesSum / minutesN) : 0,
