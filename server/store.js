@@ -1,7 +1,7 @@
 // Loads rows from Postgres and builds (and caches) the analytics model per batch.
 // Any write (sync, review decision, settings, import) calls invalidate().
 import { q, q1 } from "./db.js";
-import { buildBatchModel, phase1Attendees, activeLearners, DEFAULT_RULES, WEEKS, batchCalendar, buildJourney } from "./model.js";
+import { buildBatchModel, phase1Attendees, activeLearners, DEFAULT_RULES, WEEKS, batchCalendar, batchStatus, buildJourney } from "./model.js";
 import { suggestLearners, regionFor } from "./match.js";
 import { todayIst, addDays, fmtShortDate } from "./time.js";
 import { loadZoomAccounts } from "./zoom.js";
@@ -121,15 +121,21 @@ export async function defaultBatchId() {
   return (started || c.batches[0]).id;
 }
 
+// The batch picker only needs dates/status, so don't build every batch's full model (that took ~13 s cold with 4 batches)
 export async function batchSummaries() {
   const c = await loadCommon();
-  const out = [];
-  for (const b of c.batches) {
-    const m = await modelFor(b.id);
-    const { phaseSummary, ...rest } = m.batch;
-    out.push(rest);
-  }
-  return out;
+  const counts = new Map((await q(
+    `SELECT bm.batch_id AS "batchId", count(DISTINCT bm.id)::int AS meetings, count(zi.uuid)::int AS instances
+       FROM batch_meetings bm LEFT JOIN zoom_instances zi ON zi.batch_meeting_id = bm.id GROUP BY bm.batch_id`)).map(r => [r.batchId, r]));
+  return c.batches.map(b => {
+    const cal = batchCalendar(b);
+    const status = batchStatus(b, c.today);
+    return {
+      id: b.id, name: b.name || `Batch starting ${fmtShortDate(b.startDate)}`, shortName: fmtShortDate(b.startDate),
+      startDate: b.startDate, endDate: cal.lastDay, breakWeeks: cal.breaks, status, totalWeeks: WEEKS,
+      hasData: (counts.get(b.id)?.instances || 0) > 0, meetingsConfigured: counts.get(b.id)?.meetings || 0
+    };
+  });
 }
 
 export async function overview(batchId) {
