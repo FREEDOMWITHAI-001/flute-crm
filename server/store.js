@@ -62,7 +62,7 @@ export async function listBatches() {
 
 async function loadBatchInputs(batch) {
   const meetings = await q(
-    `SELECT id, slot, zoom_account AS "zoomAccount", meeting_id AS "meetingId", start_time AS "startTime", duration_min AS "durationMin"
+    `SELECT id, slot, zoom_account AS "zoomAccount", meeting_id AS "meetingId", start_time AS "startTime", duration_min AS "durationMin", host_email AS "hostEmail"
        FROM batch_meetings WHERE batch_id = $1`, [batch.id]);
   const instances = await q(
     `SELECT i.uuid, i.batch_meeting_id AS "batchMeetingId", i.start_time AS "startTime", i.end_time AS "endTime"

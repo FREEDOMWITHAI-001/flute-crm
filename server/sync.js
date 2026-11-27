@@ -56,8 +56,23 @@ async function syncAccount(account, client, now, log) {
       [account.key, addDays(today, 1), addDays(today, -LOOKBACK_DAYS)]
     );
 
+    await resolveHosts(client, meetings, today);
+
     const instancesByMeeting = new Map(); // meeting_id -> promise of instances (fetched once per run)
     const meetingIds = new Set();
+    const webinarIds = new Set(); // meetings Zoom turned out to run as webinars (no registrant access)
+    // One Zoom link can serve two slots (old webinars ran Sun learning and Tue/Thu practice on the same ID):
+    // then each occurrence goes to the slot that fits its weekday
+    const slotsByBatchMeeting = new Map();
+    for (const m of meetings) {
+      const k = `${m.batch_id}:${m.meeting_id}`;
+      slotsByBatchMeeting.set(k, (slotsByBatchMeeting.get(k) || 0) + 1);
+    }
+    const fitsSlot = (m, date) => {
+      if ((slotsByBatchMeeting.get(`${m.batch_id}:${m.meeting_id}`) || 0) < 2) return true;
+      const sunday = new Date(`${date}T12:00:00Z`).getUTCDay() === 0;
+      return m.slot.startsWith("learning") ? sunday : !sunday;
+    };
 
     for (const m of meetings) {
       // 1. Registration link → meeting ID
@@ -106,6 +121,7 @@ async function syncAccount(account, client, now, log) {
         if (!inst.uuid || !inst.start_time) continue;
         const date = istDate(inst.start_time);
         if (date < m.start_date || date > windowEnd) continue;
+        if (!fitsSlot(m, date)) continue;
         sessions++;
         const row = await q1(
           `INSERT INTO zoom_instances (uuid, batch_meeting_id, meeting_id, zoom_account, start_time)
@@ -120,7 +136,7 @@ async function syncAccount(account, client, now, log) {
 
         // 3. Participant report — one bad instance must not stop the rest
         try {
-          records += await pullReport(client, inst.uuid, now);
+          records += await pullReport(client, inst.uuid, now, webinarIds, m.meeting_id);
           ok++;
         } catch (e) {
           await q(`UPDATE zoom_instances SET report_error = $2 WHERE uuid = $1`, [inst.uuid, e.message || String(e)]);
@@ -131,6 +147,7 @@ async function syncAccount(account, client, now, log) {
 
     // 4. Registrants, replaced wholesale per meeting
     for (const meetingId of meetingIds) {
+      if (webinarIds.has(meetingId)) continue; // webinar registrants need a scope this app doesn't have
       try {
         const regs = await client.listRegistrants(meetingId);
         const byId = new Map();
@@ -144,7 +161,7 @@ async function syncAccount(account, client, now, log) {
         });
         ok++;
       } catch (e) {
-        fail(`Meeting ${meetingId} registrants`, e);
+        if (!isWebinarError(e)) fail(`Meeting ${meetingId} registrants`, e);
       }
     }
   } catch (e) {
@@ -161,9 +178,22 @@ async function syncAccount(account, client, now, log) {
 }
 
 /** Re-pull one instance's participant report; returns the number of rows written. */
-async function pullReport(client, uuid, now) {
-  const report = await client.getMeetingReport(uuid);
-  const participants = await client.listReportParticipants(uuid);
+// Zoom answers meeting endpoints for a webinar with "Cannot access webinar info"
+const isWebinarError = e => /webinar/i.test(e?.message || "");
+
+async function pullReport(client, uuid, now, webinarIds, meetingId) {
+  let report = {}, participants;
+  try {
+    report = await client.getMeetingReport(uuid);
+    participants = await client.listReportParticipants(uuid);
+  } catch (e) {
+    if (!isWebinarError(e)) throw e;
+    // Webinar: no summary report for this app, so the end time comes from the last leave time
+    webinarIds?.add(meetingId);
+    participants = await client.listWebinarReportParticipants(uuid);
+    const leaves = participants.map(p => p.leave_time).filter(Boolean).sort();
+    report = { end_time: leaves[leaves.length - 1] || null, participants_count: participants.length };
+  }
   const rows = participants.map(p => [
     uuid, p.user_id || p.id || null, p.name || null, p.user_email || null, p.registrant_id || null,
     p.join_time || null, p.leave_time || null, p.duration ?? null
@@ -178,6 +208,41 @@ async function pullReport(client, uuid, now) {
     );
   });
   return rows.length;
+}
+
+/**
+ * Record which Zoom user (connect@ / hd@) hosts each link, once. Meetings carry host_email;
+ * webinars refuse that call, so look them up in each user's usage report (last 90 days).
+ */
+async function resolveHosts(client, meetings, today) {
+  const missing = meetings.filter(m => m.meeting_id && !m.host_email);
+  if (!missing.length) return;
+  const hosts = new Map();
+  for (const m of missing) {
+    if (hosts.has(m.meeting_id)) continue;
+    try {
+      const info = await client.getMeeting(m.meeting_id);
+      if (info.host_email) hosts.set(m.meeting_id, info.host_email);
+    } catch { /* webinar or deleted — try the usage report below */ }
+  }
+  if (missing.some(m => !hosts.has(m.meeting_id))) {
+    try {
+      const users = await client.listUsers();
+      for (const u of users) {
+        for (let back = 0; back < 90; back += 30) {
+          const list = await client.paginate(`/report/users/${u.id}/meetings`,
+            { from: addDays(today, -back - 29), to: addDays(today, -back), type: "past" }, "meetings");
+          for (const x of list) if (!hosts.has(String(x.id))) hosts.set(String(x.id), u.email);
+        }
+      }
+    } catch { /* needs report:read:user:admin; host stays blank */ }
+  }
+  for (const m of missing) {
+    const h = hosts.get(m.meeting_id);
+    if (!h) continue;
+    m.host_email = h;
+    await q(`UPDATE batch_meetings SET host_email = $2 WHERE id = $1`, [m.id, h]);
+  }
 }
 
 /** Latest sync_runs row per source, for the UI. */

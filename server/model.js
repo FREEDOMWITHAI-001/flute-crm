@@ -12,6 +12,9 @@ export const SLOTS = {
 export const PHASES = ["Phase 1", "Phase 2"];
 export const SESSION_TYPES = ["Sunday Learning", "Tuesday Practice", "Thursday Q&A"];
 export const WEEKS = 7;
+// Flute Gandharvas' own Zoom logins (host / co-host) — never counted as attendees
+export const STAFF_EMAIL_DOMAINS = ["daveharsh.com"];
+export const isStaffEmail = email => STAFF_EMAIL_DOMAINS.some(d => String(email || "").trim().toLowerCase().endsWith("@" + d));
 const REGIONS = ["All", "India", "Overseas"];
 
 export const DEFAULT_RULES = {
@@ -133,7 +136,7 @@ export function buildBatchModel(input) {
       s = {
         id, batchId: batch.id, slot: m.slot, phase: SLOTS[m.slot].phase, week, date,
         day: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][weekday(date)],
-        type: sessionType(m.slot, date), zoomAccount: m.zoomAccount, meetingId: m.meetingId,
+        type: sessionType(m.slot, date), zoomAccount: m.zoomAccount, meetingId: m.meetingId, hostEmail: m.hostEmail || null,
         startIso: inst.startTime, endIso: inst.endTime || null, hasData: true, instanceCount: 0, rowCount: 0,
         scheduledTime: m.startTime || null, scheduledDuration: m.durationMin || null
       };
@@ -156,7 +159,7 @@ export function buildBatchModel(input) {
         sessions.set(id, {
           id, batchId: batch.id, slot: m.slot, phase: SLOTS[m.slot].phase, week: w, date,
           day: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][weekday(date)],
-          type: sessionType(m.slot, date), zoomAccount: m.zoomAccount, meetingId: m.meetingId,
+          type: sessionType(m.slot, date), zoomAccount: m.zoomAccount, meetingId: m.meetingId, hostEmail: m.hostEmail || null,
           scheduledTime: m.startTime || null, scheduledDuration: m.durationMin || null, hasData: false
         });
       }
@@ -167,6 +170,7 @@ export function buildBatchModel(input) {
   const people = new Map(); // personKey -> person
   const attendance = new Map(); // sessionId -> Map(personKey -> {intervals})
   for (const row of rows) {
+    if (isStaffEmail(row.email)) continue; // Harsh's own host logins are not learners
     const s = instanceSession.get(row.instanceUuid);
     if (!s || !row.joinTime || !row.leaveTime) continue;
     s.rowCount++;
@@ -262,7 +266,7 @@ export function buildBatchModel(input) {
     const summary = {
       id: s.id, batchId: s.batchId, slot: s.slot, week: s.week, weekLabel: s.phase === "Phase 2" ? s.week + WEEKS : s.week,
       date: s.date, day: s.day, phase: s.phase, type: s.type, startTime, durationMin,
-      zoomAccount: s.zoomAccount, meetingId: s.meetingId, status,
+      zoomAccount: s.zoomAccount, meetingId: s.meetingId, hostEmail: s.hostEmail || null, status,
       syncError: status === "Sync failed" ? input.syncErrors.get(s.zoomAccount) : null,
       registered: registeredMap.size,
       joined: s.hasData ? participants.length : null,

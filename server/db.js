@@ -196,7 +196,9 @@ const MIGRATIONS = [
    ALTER TABLE identity_links ENABLE ROW LEVEL SECURITY;
    ALTER TABLE dnc ENABLE ROW LEVEL SECURITY;
    ALTER TABLE sync_runs ENABLE ROW LEVEL SECURITY;
-   ALTER TABLE schema_version ENABLE ROW LEVEL SECURITY;`
+   ALTER TABLE schema_version ENABLE ROW LEVEL SECURITY;`,
+  // Which Zoom user hosts the link (connect@ or hd@), so the UI can say where a session ran
+  `ALTER TABLE batch_meetings ADD COLUMN IF NOT EXISTS host_email TEXT`
 ];
 
 async function migrate() {

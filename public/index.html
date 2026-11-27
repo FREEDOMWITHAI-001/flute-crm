@@ -1173,6 +1173,36 @@
     }
 
     /* Calendar Session Grid */
+    /* Sessions: one card per phase, weeks × Sun/Tue/Thu */
+    .sess-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .sess-filters .select-control { flex: 0 1 auto; min-width: 150px; }
+    .sess-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .sess-chip { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--bg-surface-subtle); color: var(--text-secondary); border: 1px solid var(--border-subtle); }
+    button.sess-chip { cursor: pointer; }
+    button.sess-chip:hover { border-color: var(--border-strong); }
+    .sess-chip b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+    .sess-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
+    .sess-phase-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+    .sess-host { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+    .sess-scroll { overflow-x: auto; margin: 0 -4px; }
+    .sess-grid { width: 100%; min-width: 560px; border-collapse: separate; border-spacing: 6px; table-layout: fixed; }
+    .sess-grid th { font-size: 11.5px; font-weight: 600; color: var(--text-muted); text-align: left; padding: 0 4px 2px; text-transform: uppercase; letter-spacing: .04em; }
+    .sess-grid th.wk { width: 92px; }
+    .sess-wk { font-size: 13px; font-weight: 700; color: var(--text-primary); white-space: nowrap; }
+    .sess-wk small { display: block; font-size: 11.5px; font-weight: 500; color: var(--text-muted); }
+    .sess-cell { border-radius: 10px; padding: 10px 12px; background: var(--bg-surface-subtle); border: 1px solid var(--border-subtle); vertical-align: top; height: 74px; transition: border-color .15s, box-shadow .15s; }
+    .sess-cell.open { cursor: pointer; background: var(--bg-surface); }
+    .sess-cell.open:hover { border-color: var(--accent); box-shadow: 0 4px 14px -6px var(--accent-ring); }
+    .sess-cell.open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .sess-cell.dim { opacity: .35; }
+    .sess-num { font-size: 20px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--text-primary); }
+    .sess-num span { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-left: 4px; }
+    .sess-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sess-bar { height: 4px; border-radius: 4px; background: var(--border-subtle); margin-top: 7px; overflow: hidden; }
+    .sess-bar i { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
+    .sess-state { font-size: 12px; font-weight: 600; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+    .sess-state.warn { color: var(--amber); }
+
     .week-calendar-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
@@ -1833,6 +1863,7 @@
       charts: {},
       // Sessions
       sessionsView: "calendar",
+      sessFilter: { type: "All", status: "All", host: "All" },
       sessionsSort: { key: "date", dir: "asc" },
       sessionParticipantSearch: "",
       sessionParticipantSort: { key: "totalMinutes", dir: "desc" },
@@ -2957,90 +2988,153 @@
       return "";
     }
 
+    // How a session reads to a person: a past date with nothing in Zoom is simply "No session"
+    function addDaysStr(d, n) {
+      const t = new Date(d + "T00:00:00Z");
+      t.setUTCDate(t.getUTCDate() + n);
+      return t.toISOString().slice(0, 10);
+    }
+    function sessionState(s, today) {
+      if (s.status === "Synced" || s.status === "Upcoming" || s.status === "Sync failed") return s.status;
+      if (s.status === "Not in Zoom") return "No session";
+      return today && s.date < addDaysStr(today, -1) ? "No session" : "Awaiting data";
+    }
+    const SESS_STATE_DOT = { Synced: "var(--green)", Upcoming: "var(--text-disabled)", "No session": "var(--border-strong)", "Awaiting data": "var(--amber)", "Sync failed": "var(--red)" };
+    const SESS_STATES = ["Synced", "Upcoming", "No session", "Awaiting data", "Sync failed"];
+    const SESS_TYPES = ["Sunday Learning", "Tuesday Practice", "Thursday Q&A"];
+    const hostOf = (boot, s) => s.hostEmail || accountLabel(boot, s.zoomAccount);
+
     function renderSessions(el, ctx) {
       const { boot } = ctx;
       if (!(boot.batches || []).length) { el.innerHTML = renderNoBatches(); return; }
-      const batch = batchById(boot, state.batchId);
       const key = "sessions:" + state.batchId;
       const res = need(key, () => getJSON(`/api/batches/${state.batchId}/sessions`));
       if (gate(el, res, key)) return;
       const rules = boot.rules || {};
-      const all = res.data.sessions || [];
-      const sessions = all.filter(s => state.phase === "All" || s.phase === state.phase);
+      const today = boot.meta && boot.meta.today;
+      const all = (res.data.sessions || []).map(s => ({ ...s, view: sessionState(s, today), host: hostOf(boot, s) }));
 
-      if (!sessions.length) {
-        const noMeetings = !all.length;
+      if (!all.length) {
         el.innerHTML = `
           <div class="empty-state">
             <div class="empty-icon">${iconSvg("calendar", 22)}</div>
             <div>
-              <h2 style="margin:0 0 6px 0;font-size:16px;">${noMeetings ? "No Zoom meetings linked to this batch yet" : `No ${esc(state.phase)} sessions in this batch`}</h2>
-              <p style="margin:0;color:var(--text-muted);">${noMeetings
-                ? "Once the Sunday learning and Tue/Thu practice meetings are linked, every expected session appears here."
-                : "Switch the phase filter to see the other phase."}</p>
+              <h2 style="margin:0 0 6px 0;font-size:16px;">No Zoom meetings linked to this batch yet</h2>
+              <p style="margin:0;color:var(--text-muted);">Once the Sunday learning and Tue/Thu practice links are added, every session appears here.</p>
             </div>
-            ${noMeetings ? `<button class="btn btn-primary" onclick="navigate('#/settings')">Link meetings in Settings</button>` : `<button class="btn btn-primary" onclick="changePhase('All')">Show all phases</button>`}
-          </div>
-        `;
+            <button class="btn btn-primary" onclick="navigate('#/settings')">Link meetings in Settings</button>
+          </div>`;
         return;
       }
 
+      const f = state.sessFilter;
+      const hosts = [...new Set(all.map(s => s.host))].sort();
+      const inPhase = s => state.phase === "All" || s.phase === state.phase;
+      const pass = s => inPhase(s)
+        && (f.type === "All" || s.type === f.type)
+        && (f.status === "All" || s.view === f.status)
+        && (f.host === "All" || s.host === f.host);
+      const shown = all.filter(pass);
+      const count = st => all.filter(s => inPhase(s) && s.view === st).length;
+      const opt = (val, label, cur) => `<option value="${esc(val)}" ${cur === val ? "selected" : ""}>${esc(label)}</option>`;
+      const filtersOn = f.type !== "All" || f.status !== "All" || f.host !== "All";
       const openHash = s => `#/session/${encodeURIComponent(s.id)}`;
-      const syncedCount = sessions.filter(s => s.status === "Synced").length;
+
       let html = `
-        <div class="toolbar">
-          <div class="toolbar-left">
-            <span style="font-size:13px;color:var(--text-muted);">
-              <strong>${sessions.length}</strong> sessions in ${esc(batch ? batch.shortName : "this batch")} · ${syncedCount} synced · Tue &amp; Thu share one Zoom meeting per phase (split by date)
-            </span>
+        <section class="card" style="display:flex;flex-direction:column;gap:12px;">
+          <div class="toolbar" style="margin:0;">
+            <div class="sess-filters">
+              <select class="select-control" aria-label="Session type" onchange="setSessFilter('type', this.value)">
+                ${opt("All", "All session types", f.type)}${SESS_TYPES.map(t => opt(t, t, f.type)).join("")}
+              </select>
+              <select class="select-control" aria-label="Status" onchange="setSessFilter('status', this.value)">
+                ${opt("All", "All statuses", f.status)}${SESS_STATES.map(t => opt(t, t, f.status)).join("")}
+              </select>
+              <select class="select-control" aria-label="Zoom account" onchange="setSessFilter('host', this.value)">
+                ${opt("All", "All Zoom accounts", f.host)}${hosts.map(h => opt(h, h, f.host)).join("")}
+              </select>
+              ${filtersOn ? `<button class="btn btn-sm" onclick="clearSessFilters()">Clear filters</button>` : ""}
+            </div>
+            <div class="segmented" role="tablist" aria-label="Sessions view mode">
+              <button class="seg-btn ${state.sessionsView === "calendar" ? "active" : ""}" role="tab" aria-selected="${state.sessionsView === "calendar"}" onclick="setSessionsView('calendar')">Weekly grid</button>
+              <button class="seg-btn ${state.sessionsView === "table" ? "active" : ""}" role="tab" aria-selected="${state.sessionsView === "table"}" onclick="setSessionsView('table')">Table</button>
+            </div>
           </div>
-          <div class="segmented" role="tablist" aria-label="Sessions view mode">
-            <button class="seg-btn ${state.sessionsView === "calendar" ? "active" : ""}" role="tab" aria-selected="${state.sessionsView === "calendar"}" onclick="setSessionsView('calendar')">Calendar Grid</button>
-            <button class="seg-btn ${state.sessionsView === "table" ? "active" : ""}" role="tab" aria-selected="${state.sessionsView === "table"}" onclick="setSessionsView('table')">Table View</button>
+          <div class="sess-chips">
+            ${SESS_STATES.filter(st => count(st)).map(st => `<button class="sess-chip" onclick="setSessFilter('status', '${esc(st)}')" title="Show only ${esc(st)}"><span class="sess-dot" style="background:${SESS_STATE_DOT[st]}"></span>${esc(st)} <b>${fmtNum(count(st))}</b></button>`).join("")}
+            <span class="sess-chip">${iconSvg("video", 13)} Zoom: <b>${esc(hosts.join(", "))}</b></span>
           </div>
-        </div>
-      `;
+        </section>`;
+
+      if (!shown.length) {
+        html += `
+          <div class="empty-state">
+            <h2 style="margin:0;font-size:16px;">No sessions match these filters</h2>
+            <button class="btn btn-primary" onclick="clearSessFilters()">Clear filters</button>
+          </div>`;
+        el.innerHTML = html;
+        return;
+      }
 
       if (state.sessionsView === "calendar") {
-        const weeks = [...new Set(sessions.map(s => s.week))].sort((a, b) => a - b);
-        html += `<div class="week-calendar-grid">`;
-        weeks.forEach(w => {
-          const wk = sessions.filter(s => s.week === w).sort((a, b) => cmp(a, b, "date", "asc") || cmp(a, b, "phase", "asc"));
-          const labels = [...new Set(wk.map(s => s.weekLabel))].map(l => `Week ${l}`).join(" · ");
+        const types = SESS_TYPES.filter(t => f.type === "All" || t === f.type);
+        const phases = ["Phase 1", "Phase 2"].filter(p => state.phase === "All" || p === state.phase);
+        const cell = s => {
+          if (!s) return `<td class="sess-cell"><span class="sess-state">—</span></td>`;
+          const dim = pass(s) ? "" : "dim";
+          const when = `${s.day} ${fmtDate(s.date)}`;
+          if (s.view !== "Synced") {
+            const warn = s.view === "Awaiting data" || s.view === "Sync failed";
+            const note = s.view === "No session" ? "Nothing in Zoom on this date"
+              : s.view === "Upcoming" ? `${fmtNum(s.registered)} registered`
+              : s.view === "Sync failed" ? "Retry from Sync & Alerts" : "Report not pulled yet";
+            return `
+              <td class="sess-cell ${dim}" title="${esc(s.type)} · ${esc(when)}">
+                <div class="sess-state ${warn ? "warn" : ""}"><span class="sess-dot" style="background:${SESS_STATE_DOT[s.view]}"></span>${esc(s.view)}</div>
+                <div class="sess-sub">${esc(when)} · ${esc(note)}</div>
+              </td>`;
+          }
+          const pct = s.registered ? Math.round((s.attended / s.registered) * 100) : null;
+          return `
+            <td class="sess-cell open ${dim}" role="link" tabindex="0" data-hash="${esc(openHash(s))}" onclick="navigate(this.dataset.hash)" onkeydown="if(event.key==='Enter')navigate(this.dataset.hash)" title="${esc(s.type)} · ${esc(when)} · ${esc(s.host)}">
+              <div class="sess-num">${fmtNum(s.attended)}${pct != null ? `<span>${pct}%</span>` : ""}</div>
+              <div class="sess-sub">${esc(when)} · ${fmtNum(s.joined)} joined</div>
+              <div class="sess-bar"><i style="width:${Math.min(100, pct ?? 0)}%"></i></div>
+            </td>`;
+        };
+        for (const phase of phases) {
+          const ps = all.filter(s => s.phase === phase && (f.host === "All" || s.host === f.host));
+          if (!ps.length) continue;
+          const weeks = [...new Set(ps.map(s => s.week))].sort((x, y) => x - y);
+          const first = ps.find(s => s.type === "Sunday Learning") || ps[0];
+          const p1 = phase === "Phase 1";
           html += `
-            <div class="week-column">
-              <div class="week-column-head">
-                <strong style="font-size:14px;">${esc(labels)}</strong>
-                <span style="font-size:12px;color:var(--text-muted);">${esc(fmtDate(wk[0].date))}</span>
+            <section class="card">
+              <div class="sess-phase-head">
+                <div>
+                  <h2 class="card-title">${p1 ? "Phase 1 · Straight Flute" : "Phase 2 · Side Flute"}
+                    <span class="badge ${p1 ? "badge-teal" : "badge-blue"}" style="margin-left:6px;">${p1 ? "Weeks 1–7 · new cohort" : "Weeks 8–14 · previous cohort"}</span>
+                  </h2>
+                  <p class="card-subtitle">Sunday ${esc(timeOrTbc(first.startTime))} · big number = attended ${esc(rules.attendedMinMinutes)}+ min · % of registered</p>
+                </div>
+                <span class="sess-host">${iconSvg("video", 13)} ${esc([...new Set(ps.map(s => s.host))].join(", "))}</span>
               </div>
-              ${wk.map(s => {
-                const canOpen = s.status === "Synced";
-                return `
-                  <div class="session-mini-card ${canOpen ? "clickable" : ""}" ${canOpen ? `role="link" tabindex="0" data-hash="${esc(openHash(s))}" onclick="navigate(this.dataset.hash)" onkeydown="if(event.key==='Enter')navigate(this.dataset.hash)"` : ""}>
-                    <div class="session-mini-top">
-                      <div>
-                        <div style="font-weight:600;font-size:13px;">${esc(s.type)}</div>
-                        <div style="font-size:11.5px;color:var(--text-muted);">W${esc(s.weekLabel)} · ${esc(s.day)} ${esc(fmtDate(s.date))} · ${esc(timeOrTbc(s.startTime))} · ${esc(s.phase)}</div>
-                        <div style="font-size:11px;color:var(--text-muted);">${esc(accountLabel(boot, s.zoomAccount))}</div>
-                      </div>
-                      ${statusBadge(s.status)}
-                    </div>
-                    ${canOpen ? `
-                      <div class="session-mini-stats">
-                        <div><span class="stat-mini-label">Attended (${esc(rules.attendedMinMinutes)}+)</span><span class="stat-mini-val">${fmtNum(s.attended)} (${fmtPct(s.attended, s.registered)})</span></div>
-                        <div><span class="stat-mini-label">Joined · Peak</span><span class="stat-mini-val">${fmtNum(s.joined)} · ${fmtNum(s.peakConcurrent)}</span></div>
-                        <div><span class="stat-mini-label">Avg · Late / Early</span><span class="stat-mini-val">${s.avgMinutes == null ? "—" : s.avgMinutes + "m"} · ${s.pctLate ?? "—"}%/${s.pctLeftEarly ?? "—"}%</span></div>
-                      </div>
-                    ` : sessionStatusNote(s)}
-                  </div>
-                `;
-              }).join("")}
-            </div>
-          `;
-        });
-        html += `</div>`;
+              <div class="sess-scroll">
+                <table class="sess-grid">
+                  <thead><tr><th class="wk">Week</th>${types.map(t => `<th>${esc(t)}</th>`).join("")}</tr></thead>
+                  <tbody>
+                    ${weeks.map(w => {
+                      const row = ps.filter(s => s.week === w);
+                      const sun = row.find(s => s.type === "Sunday Learning") || row[0];
+                      return `<tr><td><div class="sess-wk">W${esc(sun.weekLabel)}<small>${esc(fmtDate(sun.date))}</small></div></td>${types.map(t => cell(row.find(s => s.type === t))).join("")}</tr>`;
+                    }).join("")}
+                  </tbody>
+                </table>
+              </div>
+            </section>`;
+        }
       } else {
-        const sorted = [...sessions].sort((a, b) => cmp(a, b, state.sessionsSort.key, state.sessionsSort.dir) || cmp(a, b, "slot", "asc"));
+        const sorted = [...shown].sort((x, y) => cmp(x, y, state.sessionsSort.key, state.sessionsSort.dir) || cmp(x, y, "slot", "asc"));
         const sortAttr = k => (state.sessionsSort.key === k ? `aria-sort="${state.sessionsSort.dir === "asc" ? "ascending" : "descending"}"` : "");
         html += `
           <div class="table-wrap">
@@ -3050,41 +3144,39 @@
                   <th class="sortable" ${sortAttr("date")} onclick="sortSessions('date')">Date</th>
                   <th>Session</th>
                   <th>Phase</th>
-                  <th>Zoom Account</th>
+                  <th>Zoom account</th>
                   <th>Status</th>
                   <th class="num sortable" ${sortAttr("registered")} onclick="sortSessions('registered')">Registered</th>
                   <th class="num sortable" ${sortAttr("joined")} onclick="sortSessions('joined')">Joined</th>
                   <th class="num sortable" ${sortAttr("attended")} onclick="sortSessions('attended')">Attended (${esc(rules.attendedMinMinutes)}+)</th>
-                  <th class="num sortable" ${sortAttr("avgMinutes")} onclick="sortSessions('avgMinutes')">Avg Min</th>
+                  <th class="num sortable" ${sortAttr("avgMinutes")} onclick="sortSessions('avgMinutes')">Avg min</th>
                   <th class="num sortable" ${sortAttr("peakConcurrent")} onclick="sortSessions('peakConcurrent')">Peak</th>
                   <th class="num">% Late</th>
-                  <th class="num">% Left Early</th>
+                  <th class="num">% Left early</th>
                 </tr>
               </thead>
               <tbody>
                 ${sorted.map(s => {
-                  const canOpen = s.status === "Synced";
+                  const canOpen = s.view === "Synced";
                   return `
                     <tr class="${canOpen ? "clickable-row" : ""}" ${canOpen ? `data-hash="${esc(openHash(s))}" onclick="navigate(this.dataset.hash)"` : ""}>
                       <td class="tabular"><strong>W${esc(s.weekLabel)}</strong> · ${esc(s.day)} ${esc(fmtDate(s.date))}</td>
                       <td>${canOpen ? `<a href="${esc(openHash(s))}" onclick="event.stopPropagation()"><strong>${esc(s.type)}</strong></a>` : `<strong>${esc(s.type)}</strong>`}<div class="sub-cell">${esc(timeOrTbc(s.startTime))}</div></td>
                       <td>${esc(s.phase)}</td>
-                      <td style="font-size:12px;color:var(--text-muted);">${esc(accountLabel(boot, s.zoomAccount))}</td>
-                      <td>${statusBadge(s.status)}${s.status === "Sync failed" && s.syncError ? `<div class="sub-cell" style="color:var(--red);">${esc(s.syncError)}</div>` : ""}</td>
+                      <td style="font-size:12px;color:var(--text-muted);">${esc(s.host)}<div class="sub-cell">ID ${esc(s.meetingId || "—")}</div></td>
+                      <td><span class="sess-chip" style="padding:2px 8px;"><span class="sess-dot" style="background:${SESS_STATE_DOT[s.view]}"></span>${esc(s.view)}</span></td>
                       <td class="num">${fmtNum(s.registered)}</td>
-                      <td class="num">${fmtNum(s.joined)}</td>
-                      <td class="num">${s.attended != null ? `<strong>${fmtNum(s.attended)}</strong> (${fmtPct(s.attended, s.registered)})` : "—"}</td>
-                      <td class="num">${s.avgMinutes != null ? s.avgMinutes + "m" : "—"}</td>
-                      <td class="num">${fmtNum(s.peakConcurrent)}</td>
-                      <td class="num">${s.pctLate != null ? s.pctLate + "%" : "—"}</td>
-                      <td class="num">${s.pctLeftEarly != null ? s.pctLeftEarly + "%" : "—"}</td>
-                    </tr>
-                  `;
+                      <td class="num">${canOpen ? fmtNum(s.joined) : "—"}</td>
+                      <td class="num">${canOpen && s.attended != null ? `<strong>${fmtNum(s.attended)}</strong> (${fmtPct(s.attended, s.registered)})` : "—"}</td>
+                      <td class="num">${canOpen && s.avgMinutes != null ? s.avgMinutes + "m" : "—"}</td>
+                      <td class="num">${canOpen ? fmtNum(s.peakConcurrent) : "—"}</td>
+                      <td class="num">${canOpen && s.pctLate != null ? s.pctLate + "%" : "—"}</td>
+                      <td class="num">${canOpen && s.pctLeftEarly != null ? s.pctLeftEarly + "%" : "—"}</td>
+                    </tr>`;
                 }).join("")}
               </tbody>
             </table>
-          </div>
-        `;
+          </div>`;
       }
 
       el.innerHTML = html;
@@ -4931,6 +5023,8 @@
 
       // ----- Sessions -----
       setSessionsView(v) { state.sessionsView = v; render(); },
+      setSessFilter(k, v) { state.sessFilter = { ...state.sessFilter, [k]: v }; render(); },
+      clearSessFilters() { state.sessFilter = { type: "All", status: "All", host: "All" }; render(); },
       sortSessions(key) {
         if (state.sessionsSort.key === key) state.sessionsSort.dir = state.sessionsSort.dir === "asc" ? "desc" : "asc";
         else { state.sessionsSort.key = key; state.sessionsSort.dir = key === "date" ? "asc" : "desc"; }

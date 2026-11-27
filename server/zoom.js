@@ -155,6 +155,11 @@ export class ZoomClient {
     return this.paginate(`/report/meetings/${this.encodeUuid(uuid)}/participants`, { include_fields: "registrant_id" }, "participants");
   }
 
+  /** Older hackathon sessions ran as recurring webinars; their attendance comes from the webinar report. */
+  listWebinarReportParticipants(uuid) {
+    return this.paginate(`/report/webinars/${this.encodeUuid(uuid)}/participants`, {}, "participants");
+  }
+
   listRegistrants(meetingId) {
     return this.paginate(`/meetings/${encodeURIComponent(meetingId)}/registrants`, { status: "approved" }, "registrants");
   }
