@@ -305,7 +305,7 @@ export function buildBatchModel(input) {
 
     const summary = {
       id: s.id, batchId: s.batchId, slot: s.slot, week: s.week, weekLabel: s.phase === "Phase 2" ? s.week + WEEKS : s.week,
-      date: s.date, day: s.day, phase: s.phase, type: s.type, startTime, durationMin,
+      date: s.date, day: s.day, phase: s.phase, type: s.type, startTime, durationMin, scheduledTime: s.scheduledTime || null,
       zoomAccount: s.zoomAccount, meetingId: s.meetingId, hostEmail: s.hostEmail || null, status,
       syncError: status === "Sync failed" ? input.syncErrors.get(s.zoomAccount) : null,
       registered: registeredMap.size,

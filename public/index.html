@@ -1799,6 +1799,7 @@
     const LEARNER_PAGE = 50;
     const LIST_PAGE = 50;
     const REVIEW_PAGE = 10;
+    const PART_PAGE = 50; // session participants per page
 
     // Page n of rows, where limit = n * size (state keeps the end index so filter resets still work)
     function pageOf(rows, limit, size) {
@@ -1884,6 +1885,7 @@
       sessionsSort: { key: "date", dir: "asc" },
       sessionParticipantSearch: "",
       sessionParticipantSort: { key: "totalMinutes", dir: "desc" },
+      sessionPartLimit: PART_PAGE,
       expandedParticipantIdx: null,
       sessionShowAll: false,
       // Overview
@@ -3146,7 +3148,7 @@
                   <h2 class="card-title">${p1 ? "Phase 1 · Straight Flute" : "Phase 2 · Side Flute"}
                     <span class="badge ${p1 ? "badge-teal" : "badge-blue"}" style="margin-left:6px;">${p1 ? "Weeks 1–7 · new cohort" : "Weeks 8–14 · previous cohort"}</span>
                   </h2>
-                  <p class="card-subtitle">Sunday ${esc(timeOrTbc(first.startTime))} · big number = paid learners attending ${esc(rules.attendedMinMinutes)}+ min · % of the phase's paid learners</p>
+                  <p class="card-subtitle">Sunday ${esc(timeOrTbc(first.scheduledTime || first.startTime))} · big number = paid learners attending ${esc(rules.attendedMinMinutes)}+ min · % of the phase's paid learners</p>
                 </div>
                 <span class="sess-host">${iconSvg("video", 13)} ${esc([...new Set(ps.map(s => s.host))].join(", "))}</span>
               </div>
@@ -3231,7 +3233,8 @@
       const filtered = participantsAll.filter(p =>
         !q || String(p.zoomName || "").toLowerCase().includes(q) || String(p.zoomEmail || "").toLowerCase().includes(q) || String(p.learnerName || "").toLowerCase().includes(q)
       ).sort((a, b) => cmp(a, b, state.sessionParticipantSort.key, state.sessionParticipantSort.dir));
-      const shown = state.sessionShowAll ? filtered : filtered.slice(0, PARTICIPANT_CAP);
+      const partPg = pageOf(filtered, state.sessionPartLimit, PART_PAGE);
+      const shown = partPg.rows;
       const leftEarlyCut = (s.durationMin || 0) - (rules.leftEarlyMinutes || 0);
       const sortAttr = k => (state.sessionParticipantSort.key === k ? `aria-sort="${state.sessionParticipantSort.dir === "asc" ? "ascending" : "descending"}"` : "");
 
@@ -3299,6 +3302,7 @@
             </div>
             <input type="search" id="participant-search" class="search-input" placeholder="Search participant or email..." aria-label="Search participants" value="${esc(state.sessionParticipantSearch)}" oninput="setSessionParticipantSearch(this.value)" />
           </div>
+          ${partPg.pages > 1 ? `<div style="margin-bottom:10px;">${pagerHtml(filtered.length, partPg, PART_PAGE, "gotoParticipantsPage")}</div>` : ""}
 
           <div class="table-wrap">
             <table class="data-table">
@@ -3355,10 +3359,7 @@
               </tbody>
             </table>
           </div>
-          ${filtered.length > shown.length ? `
-            <div style="display:flex;justify-content:center;padding-top:12px;">
-              <button class="btn" onclick="showAllParticipants()">Show all ${fmtNum(filtered.length)} participants</button>
-            </div>` : ""}
+          <div style="padding-top:12px;">${pagerHtml(filtered.length, partPg, PART_PAGE, "gotoParticipantsPage")}</div>
         </section>
       `;
 
@@ -5139,14 +5140,23 @@
         else { state.sessionsSort.key = key; state.sessionsSort.dir = key === "date" ? "asc" : "desc"; }
         render();
       },
+      gotoParticipantsPage(n) {
+        state.sessionPartLimit = n * PART_PAGE;
+        state.expandedParticipantIdx = null;
+        render();
+        const box = document.getElementById("participant-search");
+        if (box) box.scrollIntoView({ block: "start" });
+      },
       setSessionParticipantSearch(val) {
         state.sessionParticipantSearch = val;
+        state.sessionPartLimit = PART_PAGE;
         state.expandedParticipantIdx = null;
         render();
       },
       sortSessionParticipants(key) {
         if (state.sessionParticipantSort.key === key) state.sessionParticipantSort.dir = state.sessionParticipantSort.dir === "asc" ? "desc" : "asc";
         else { state.sessionParticipantSort.key = key; state.sessionParticipantSort.dir = key === "zoomName" || key === "firstJoinOffset" ? "asc" : "desc"; }
+        state.sessionPartLimit = PART_PAGE;
         state.expandedParticipantIdx = null;
         render();
       },
@@ -5572,6 +5582,7 @@
     window.addEventListener("hashchange", () => {
       state.expandedParticipantIdx = null;
       state.sessionShowAll = false;
+      state.sessionPartLimit = PART_PAGE;
       state.sessionParticipantSearch = "";
       state.confirm = null;
       state.meetingForm = null;
