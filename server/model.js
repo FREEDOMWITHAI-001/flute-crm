@@ -259,7 +259,8 @@ export function buildBatchModel(input) {
     const participants = [];
     for (const [personKey, a] of perSession) {
       const segs = unionIntervals(a.intervals.map(([x, y]) => [Math.max(0, x), Math.min(durationMin, y)]));
-      const total = Math.round(segs.reduce((t, [x, y]) => t + (y - x), 0));
+      // Completed minutes only: 19m 40s is 19, so the "20+ minutes" rule is applied exactly
+      const total = Math.floor(segs.reduce((t, [x, y]) => t + (y - x), 0) + 1e-9);
       const person = people.get(personKey);
       const learner = person.learnerId ? index.byId.get(person.learnerId) : null;
       const segments = segs.map(([x, y]) => ({ startMin: Math.floor(x), endMin: Math.max(Math.floor(x) + 1, Math.ceil(y)) }));

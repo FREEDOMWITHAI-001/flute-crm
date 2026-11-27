@@ -250,3 +250,16 @@ test("retention = week-1 learners still attending; never above 100% even when la
   assert.deepEqual(p1.weeklyRetainedFromW1.slice(0, 3), [2, 1, 1]);
   for (const v of p1.weeklyRetainedFromW1) assert.ok(v == null || v <= p1.w1Attended);
 });
+
+test("20-minute rule is exact: 19m 40s is not attended, 20m 00s is", () => {
+  const r = [
+    row("w1sun", "Asha Rao", "asha@example.com", "2026-12-06T13:30:00Z", "2026-12-06T13:49:40Z"), // 19m 40s
+    row("w1sun", "Dev K", "dev@example.com", "2026-12-06T13:30:00Z", "2026-12-06T13:50:00Z")       // 20m 00s
+  ];
+  const m = build({ rows: r, rules: { attendedMinMinutes: 20 } });
+  const s = m.sessions.find(x => x.date === "2026-12-06" && x.slot === "learning_p1");
+  const d = m.sessionDetail.get(s.id).participants;
+  assert.equal(d.find(p => p.zoomEmail === "asha@example.com").totalMinutes, 19);
+  assert.equal(d.find(p => p.zoomEmail === "dev@example.com").totalMinutes, 20);
+  assert.equal(s.attended, 1);
+});
