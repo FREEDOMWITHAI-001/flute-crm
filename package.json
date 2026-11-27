@@ -1,0 +1,22 @@
+{
+  "name": "flute-gandharvas-crm",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Flute Gandharvas CRM - module 1: Hackathon attendance & retention (Zoom + TagMango)",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server/index.js",
+    "dev": "node --env-file-if-exists=.env --watch server/index.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "testdata": "node --env-file-if-exists=.env scripts/test-data.js",
+    "testdata:clear": "node --env-file-if-exists=.env scripts/test-data.js clear"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.6.0",
+    "express": "^4.22.3",
+    "pg": "^8.23.1"
+  }
+}
