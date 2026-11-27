@@ -172,8 +172,10 @@
     /* Layout Shell */
     .app-shell {
       display: flex;
-      min-height: 100vh;
+      height: 100vh;
+      height: 100dvh;
       width: 100%;
+      overflow: hidden;
     }
 
     /* Sidebar */
@@ -186,7 +188,7 @@
       flex-direction: column;
       position: sticky;
       top: 0;
-      height: 100vh;
+      height: 100%;
       z-index: 30;
       overscroll-behavior: contain;
       transition: width var(--transition-fast);
@@ -387,10 +389,15 @@
       min-width: 0;
       display: flex;
       flex-direction: column;
+      height: 100%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior: contain;
     }
 
     /* Top Bar */
     .topbar {
+      flex-shrink: 0; /* the main column is fixed-height now; never squash the bar under its wrapped controls */
       min-height: var(--topbar-height);
       background: var(--bg-surface);
       border-bottom: 1px solid var(--border-subtle);
@@ -1399,7 +1406,7 @@
       .grid-charts-main,
       .grid-2,
       .grid-3 {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
       }
     }
 
@@ -4609,7 +4616,12 @@
         focus = { id: a.id, start: null, end: null };
         try { focus.start = a.selectionStart; focus.end = a.selectionEnd; } catch (_) { /* not a text input */ }
       }
-      return { fields, focus, scrollY: window.scrollY };
+      return { fields, focus, scrollY: pageScroller().scrollTop };
+    }
+
+    // The content column is the scroll container (sidebar and top bar stay fixed)
+    function pageScroller() {
+      return document.querySelector(".main-column") || document.scrollingElement || document.documentElement;
     }
 
     function restoreUi(snap) {
@@ -4627,7 +4639,8 @@
           if (snap.focus.start != null) { try { elx.setSelectionRange(snap.focus.start, snap.focus.end); } catch (_) { /* not supported */ } }
         }
       }
-      if (Math.abs(window.scrollY - snap.scrollY) > 1) window.scrollTo(0, snap.scrollY);
+      const sc = pageScroller();
+      if (Math.abs(sc.scrollTop - snap.scrollY) > 1) sc.scrollTop = snap.scrollY;
     }
 
     function renderShell(boot, screen) {
@@ -4969,9 +4982,9 @@
         render();
       },
       showMoreLearners() { state.learnersLimit += LEARNER_PAGE; render(); },
-      gotoLearnersPage(n) { state.learnersLimit = n * LEARNER_PAGE; render(); window.scrollTo({ top: 0 }); },
-      gotoListsPage(n) { state.listsLimit = n * LIST_PAGE; render(); window.scrollTo({ top: 0 }); },
-      gotoReviewPage(n) { state.reviewLimit = n * REVIEW_PAGE; render(); window.scrollTo({ top: 0 }); },
+      gotoLearnersPage(n) { state.learnersLimit = n * LEARNER_PAGE; render(); pageScroller().scrollTo({ top: 0 }); },
+      gotoListsPage(n) { state.listsLimit = n * LIST_PAGE; render(); pageScroller().scrollTo({ top: 0 }); },
+      gotoReviewPage(n) { state.reviewLimit = n * REVIEW_PAGE; render(); pageScroller().scrollTo({ top: 0 }); },
       copySelectedLearnerNumbers() {
         const list = window.__learnersFiltered || [];
         const sel = list.filter(l => state.learnersFilter.selected.has(l.rowKey));
