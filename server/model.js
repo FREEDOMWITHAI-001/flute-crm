@@ -1,6 +1,6 @@
 // Pure analytics: Zoom join/leave rows + learners + rules  →  everything the dashboard shows.
 // No I/O here, so every number on screen can be unit-tested from plain objects.
-import { istDate, istTime, weekday, addDays, daysBetween, fmtShortDate } from "./time.js";
+import { istDate, istTime, istInstant, weekday, addDays, daysBetween, fmtShortDate } from "./time.js";
 import { buildLearnerIndex, resolveIdentity, normEmail, phoneKey, regionFor, normName } from "./match.js";
 
 export const SLOTS = {
@@ -143,8 +143,17 @@ export function buildBatchModel(input) {
       sessions.set(id, s);
     }
     s.instanceCount++;
-    if (new Date(inst.startTime) < new Date(s.startIso)) s.startIso = inst.startTime;
-    if (inst.endTime && (!s.endIso || new Date(inst.endTime) > new Date(s.endIso))) s.endIso = inst.endTime;
+    // A host test-start or quick restart (< 3 min) must not move the session's start or end
+    const micro = inst.endTime && minutesBetween(inst.startTime, inst.endTime) < 3;
+    if (!micro && s.onlyMicro !== false) { s.startIso = inst.startTime; s.endIso = inst.endTime || null; s.onlyMicro = false; }
+    else if (!micro) {
+      if (new Date(inst.startTime) < new Date(s.startIso)) s.startIso = inst.startTime;
+      if (inst.endTime && (!s.endIso || new Date(inst.endTime) > new Date(s.endIso))) s.endIso = inst.endTime;
+    } else if (s.onlyMicro !== false) {
+      s.onlyMicro = true;
+      if (new Date(inst.startTime) < new Date(s.startIso)) s.startIso = inst.startTime;
+      if (inst.endTime && (!s.endIso || new Date(inst.endTime) > new Date(s.endIso))) s.endIso = inst.endTime;
+    }
     instanceSession.set(inst.uuid, s);
   }
 
@@ -222,6 +231,11 @@ export function buildBatchModel(input) {
     const startTime = s.hasData ? istTime(s.startIso) : (s.scheduledTime || null);
     const registeredMap = registeredBySlot.get(s.slot) || new Map();
     const perSession = attendance.get(s.id) || new Map();
+    // "Late" counts from the scheduled class time, not from when the host opened the room
+    // (rooms open 10-15 min early, and a host test-start can be half an hour early)
+    const classStartOffset = s.hasData && s.scheduledTime
+      ? Math.min(Math.max(0, Math.round(minutesBetween(s.startIso, istInstant(s.date, s.scheduledTime)))), Math.max(0, durationMin - 1))
+      : 0;
 
     const participants = [];
     for (const [personKey, a] of perSession) {
@@ -243,6 +257,9 @@ export function buildBatchModel(input) {
         firstJoinOffset: segments.length ? segments[0].startMin : 0,
         lastLeaveOffset: segments.length ? segments[segments.length - 1].endMin : 0
       };
+      part.minutesAfterClassStart = Math.max(0, part.firstJoinOffset - classStartOffset);
+      part.late = part.firstJoinOffset > classStartOffset + rules.lateThresholdMinutes;
+      part.leftEarly = part.lastLeaveOffset < durationMin - rules.leftEarlyMinutes;
       participants.push(part);
       if (!personSessions.has(personKey)) personSessions.set(personKey, []);
       personSessions.get(personKey).push({ sessionId: s.id, minutes: total, segments, week: s.week, type: s.type, phase: s.phase, date: s.date, startTime, durationMin });
@@ -273,8 +290,9 @@ export function buildBatchModel(input) {
       attended: s.hasData ? attended.length : null,
       avgMinutes: s.hasData && participants.length ? Math.round(participants.reduce((t, p) => t + p.totalMinutes, 0) / participants.length) : null,
       peakConcurrent: s.hasData ? curve.reduce((mx, pt) => Math.max(mx, pt.count), 0) : null,
-      pctLate: s.hasData ? (pct(participants.filter(p => p.firstJoinOffset > rules.lateThresholdMinutes).length, participants.length) ?? 0) : null,
-      pctLeftEarly: s.hasData ? (pct(participants.filter(p => p.lastLeaveOffset < durationMin - rules.leftEarlyMinutes).length, participants.length) ?? 0) : null
+      classStartOffset,
+      pctLate: s.hasData ? (pct(participants.filter(p => p.late).length, participants.length) ?? 0) : null,
+      pctLeftEarly: s.hasData ? (pct(participants.filter(p => p.leftEarly).length, participants.length) ?? 0) : null
     };
     sessionList.push(summary);
     sessionDetail.set(s.id, { ...summary, attendanceOverTime: curve, participants });

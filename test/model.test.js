@@ -199,3 +199,23 @@ test("review suggestions rank the closest name first", () => {
   assert.equal(s[0].learnerId, 1);
   assert.equal(suggestLearners({ name: "Guest 23", email: "" }, learners).length, 0);
 });
+
+test("late is measured from the scheduled class time; a host test-start doesn't shift the session", () => {
+  // Class at 19:00 IST (13:30Z). Host test-starts 18:30 for 1 minute, then opens the room at 18:45 (13:15Z).
+  const inst = [
+    { uuid: "test", batchMeetingId: 10, startTime: at("2026-12-06", "13:00"), endTime: at("2026-12-06", "13:01") },
+    { uuid: "real", batchMeetingId: 10, startTime: at("2026-12-06", "13:15"), endTime: at("2026-12-06", "15:00") }
+  ];
+  const r = [
+    row("real", "Asha Rao", "asha@example.com", at("2026-12-06", "13:35"), at("2026-12-06", "15:00")), // 5 min after class start
+    row("real", "Dev K", "dev@example.com", at("2026-12-06", "14:00"), at("2026-12-06", "15:00"))      // 30 min after class start
+  ];
+  const m = build({ instances: inst, rows: r, rules: { lateThresholdMinutes: 20 } });
+  const s = m.sessions.find(x => x.date === "2026-12-06" && x.slot === "learning_p1");
+  assert.equal(s.startTime, "18:45");           // the 1-minute test start is ignored
+  assert.equal(s.classStartOffset, 15);         // class starts 15 min after the room opened
+  const d = m.sessionDetail.get(s.id).participants;
+  assert.equal(d.find(p => p.zoomEmail === "asha@example.com").late, false);
+  assert.equal(d.find(p => p.zoomEmail === "dev@example.com").late, true);
+  assert.equal(s.pctLate, 50);
+});

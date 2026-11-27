@@ -3288,8 +3288,8 @@
               <tbody>
                 ${shown.map((p, idx) => {
                   const isAttended = p.totalMinutes >= rules.attendedMinMinutes;
-                  const isLate = p.firstJoinOffset > rules.lateThresholdMinutes;
-                  const isLeftEarly = p.lastLeaveOffset < leftEarlyCut;
+                  const isLate = p.late != null ? p.late : p.firstJoinOffset > rules.lateThresholdMinutes;
+                  const isLeftEarly = p.leftEarly != null ? p.leftEarly : p.lastLeaveOffset < leftEarlyCut;
                   const isExpanded = state.expandedParticipantIdx === idx;
                   return `
                     <tr class="clickable-row" onclick="toggleParticipantExpand(${idx})" aria-expanded="${isExpanded}">
@@ -3308,13 +3308,13 @@
                       <td class="num"><strong>${fmtNum(p.totalMinutes)}m</strong></td>
                       <td class="num">${fmtNum(p.rejoins)}</td>
                       <td>${isAttended ? `<span class="badge badge-green">Yes</span>` : `<span class="badge badge-red">No (&lt;${esc(rules.attendedMinMinutes)}m)</span>`}</td>
-                      <td>${isLate ? `<span class="badge badge-amber">Yes (+${fmtNum(p.firstJoinOffset)}m)</span>` : `<span style="color:var(--text-muted);">No</span>`}</td>
+                      <td>${isLate ? `<span class="badge badge-amber">Yes (+${fmtNum(p.minutesAfterClassStart ?? p.firstJoinOffset)}m)</span>` : `<span style="color:var(--text-muted);">No</span>`}</td>
                       <td>${isLeftEarly ? `<span class="badge badge-amber">Yes</span>` : `<span style="color:var(--text-muted);">No</span>`}</td>
                     </tr>
                     ${isExpanded ? `
                       <tr>
                         <td colspan="10" style="padding:12px 16px;background:var(--bg-canvas);">
-                          ${renderTimelineBar(s.startTime, s.durationMin, p.segments, rules.lateThresholdMinutes)}
+                          ${renderTimelineBar(s.startTime, s.durationMin, p.segments, (s.classStartOffset || 0) + Number(rules.lateThresholdMinutes || 0))}
                         </td>
                       </tr>
                     ` : ""}
